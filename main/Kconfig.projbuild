@@ -1,0 +1,28 @@
+menu "TWAI GPIO Configuration"
+
+    config CAN_TX_GPIO
+        int "TX GPIO number"
+        default 2 if IDF_TARGET_ESP32C3
+        default 20 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
+        default 21 if IDF_TARGET_ESP32
+        help
+            Selects GPIO used for TWAI (CAN) bus transmit. Connect to your CAN transceiver.
+
+    config CAN_RX_GPIO
+        int "RX GPIO number"
+        default 3 if IDF_TARGET_ESP32C3
+        default 21 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
+        default 22 if IDF_TARGET_ESP32
+        help
+            Selects GPIO used for TWAI (CAN) bus receive. Connect to your CAN transceiver.
+
+    config CAN_EN_GPIO
+        int "EN GPIO number"
+        default 4 if IDF_TARGET_ESP32C3
+        default 22 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
+        default 23 if IDF_TARGET_ESP32
+        help
+            Selects GPIO used for TWAI (CAN) bus transceiver enable. Connect to your CAN transciever.
+
+
+endmenu
