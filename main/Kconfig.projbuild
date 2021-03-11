@@ -33,6 +33,12 @@ menu "flatpack2s2 Project Configuration"
             default 4
             help
                 Selects GPIO used for SSD13xx I2C OLED SDA line
+        config I2C_OLED_RST
+            int "I2C OLED SDA GPIO"
+            default 40
+            help
+                Selects GPIO used for SSD13xx I2C OLED RST line - this is probably not actually present and you can leave this untouched.
+                Just make sure it's an unassigned GPIO.
 
         config I2C_QWIIC_SCL
             int "Qwiic Connector SCL GPIO"
