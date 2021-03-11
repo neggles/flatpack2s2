@@ -1,28 +1,76 @@
-menu "TWAI GPIO Configuration"
+menu "flatpack2s2 Project Configuration"
 
-    config CAN_TX_GPIO
-        int "TX GPIO number"
-        default 2 if IDF_TARGET_ESP32C3
-        default 20 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
-        default 21 if IDF_TARGET_ESP32
-        help
-            Selects GPIO used for TWAI (CAN) bus transmit. Connect to your CAN transceiver.
+    menu "TWAI"
+        config TWAI_TX_GPIO
+            int "TWAI TX GPIO"
+            default 15
+            help
+                Selects GPIO used for TWAI (CAN) bus transmit. Connect to your CAN transceiver.
 
-    config CAN_RX_GPIO
-        int "RX GPIO number"
-        default 3 if IDF_TARGET_ESP32C3
-        default 21 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
-        default 22 if IDF_TARGET_ESP32
-        help
-            Selects GPIO used for TWAI (CAN) bus receive. Connect to your CAN transceiver.
+        config TWAI_RX_GPIO
+            int "TWAI RX GPIO"
+            default 16
+            help
+                Selects GPIO used for TWAI (CAN) bus receive. Connect to your CAN transceiver.
 
-    config CAN_EN_GPIO
-        int "EN GPIO number"
-        default 4 if IDF_TARGET_ESP32C3
-        default 22 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
-        default 23 if IDF_TARGET_ESP32
-        help
-            Selects GPIO used for TWAI (CAN) bus transceiver enable. Connect to your CAN transciever.
+        config TWAI_EN_GPIO
+            int "TWAI EN GPIO"
+            default 17
+            help
+                Selects GPIO used for TWAI (CAN) bus transceiver enable. Connect to your CAN transciever.
+    endmenu
 
+    menu "I2C"
 
+        config I2C_OLED_SCL
+            int "I2C OLED SCL GPIO"
+            default 5
+            help
+                Selects GPIO used for SSD13xx I2C OLED SCL line
+
+        config I2C_OLED_SDA
+            int "I2C OLED SDA GPIO"
+            default 4
+            help
+                Selects GPIO used for SSD13xx I2C OLED SDA line
+
+        config I2C_QWIIC_SCL
+            int "Qwiic Connector SCL GPIO"
+            default 1
+            help
+                Selects GPIO used for SSD13xx I2C OLED SCL line
+
+        config I2C_QWIIC_SDA
+            int "Qwiic Connector SDA GPIO"
+            default 2
+            help
+                Selects GPIO used for SSD13xx I2C OLED SDA line
+    endmenu
+
+    menu "misc. GPIOs"
+
+        config FP2S2_SW_L_GPIO
+            int "Button 3 (SW_L) GPIO"
+            default 35
+            help
+                Selects GPIO for SW3 (SW_L)
+
+        config FP2S2_SW_S_GPIO
+            int "Button 4 (SW_S) GPIO"
+            default 36
+            help
+                Selects GPIO for SW4 (SW_S)
+
+        config FP2S2_SW_R_GPIO
+            int "Button 5 (SW_R) GPIO"
+            default 37
+            help
+                Selects GPIO for SW5 (SW_R)
+
+        config FP2S2_RGB_GPIO
+            int "WS2812B RGB LED GPIO"
+            default 38
+            help
+                Selects GPIO used for WS2812B RGB status LED
+    endmenu
 endmenu

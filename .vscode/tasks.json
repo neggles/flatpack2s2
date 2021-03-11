@@ -295,6 +295,11 @@
                     }
                 }
             }
+        },
+        {
+            "label": "update u8g2 component subtree",
+            "type": "shell",
+            "command": "git subtree pull --prefix components/u8g2 https://github.com/olikraus/u8g2.git master --squash"
         }
     ]
 }
