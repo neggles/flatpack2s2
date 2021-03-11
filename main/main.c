@@ -2,12 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
-#include <esp_log.h>
+#include <esp_netif.h>
 #include <esp_spi_flash.h>
-#include <esp_system.h>
+#include <esp_wifi.h>
 
 #include <soc/rtc.h>
 
@@ -16,14 +13,21 @@
 #include <driver/spi_master.h>
 
 #include "sdkconfig.h"
+
+#include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
+#include "wifi_manager.h"
 
 #define PIN_SDA GPIO_NUM_4
 #define PIN_SCL GPIO_NUM_5
 #define PIN_RST GPIO_NUM_16
 
-static const char *TAG = "ssd1306";
+static const char *TAG = "flatpack2s2";
 
 void task_init_oled(void *ignore) {
 
@@ -63,10 +67,28 @@ void task_init_oled(void *ignore) {
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief wifi connection manager callback
+ */
+void cb_connection_ok(void *pvParameter) {
+    ip_event_got_ip_t *param = (ip_event_got_ip_t *)pvParameter;
+
+    /* transform IP to human readable string */
+    char str_ip[16];
+    esp_ip4addr_ntoa(&param->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
+
+    ESP_LOGI(TAG, "I have a connection and my IP is %s!", str_ip);
+}
+
 void app_main(void) {
     printf("flatpack2s2 startup!\n");
 
-    /* Print chip information */
+    /* start the wifi manager */
+    wifi_manager_start();
+    /* register wifi connection manager callback */
+    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
+
+    //* Print chip information
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
     rtc_cpu_freq_config_t clk_config;
@@ -75,11 +97,10 @@ void app_main(void) {
            clk_config.freq_mhz,
            (chip_info.features & CHIP_FEATURE_BT) ? "/BT" : "",
            (chip_info.features & CHIP_FEATURE_BLE) ? "/BLE" : "");
-
     printf("silicon revision %d, ", chip_info.revision);
-
     printf("%dMB %s flash\n", spi_flash_get_chip_size() / (1024 * 1024),
            (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
 
+    //* fire off the i2c oled task
     xTaskCreate(task_init_oled, "i2c_oled_init", 1024 * 2, (void *)0, 10, NULL);
 }
