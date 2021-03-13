@@ -1,5 +1,13 @@
 menu "flatpack2s2 Project Configuration"
 
+    menu "System"
+        config POSIX_TZ
+            string "POSIX Time Zone String"
+            default "AEST-10AEDT,M10.1.0,M4.1.0/3"
+            help
+                POSIX time zone string for system. I might implement a tz db later idk
+
+    endmenu #system
     menu "TWAI"
         config TWAI_TX_GPIO
             int "TWAI TX GPIO"
@@ -80,3 +88,15 @@ menu "flatpack2s2 Project Configuration"
                 Selects GPIO used for WS2812B RGB status LED
     endmenu
 endmenu
+
+menu "LWIP"
+    menu "SNTP"
+
+        config SNTP_SERVER
+            string "SNTP Server address/hostname"
+            default "pool.ntp.org"
+            help
+                Set default SNTP server used by library if one is not provided by DHCP
+
+    endmenu # SNTP
+endmenu # LWIP

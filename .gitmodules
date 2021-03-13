@@ -1,0 +1,9 @@
+[submodule "components/lvgl"]
+	path = components/lvgl
+	url = https://github.com/lvgl/lvgl.git
+[submodule "components/lvgl_esp32_drivers"]
+	path = components/lvgl_esp32_drivers
+	url = https://github.com/lvgl/lvgl_esp32_drivers.git
+[submodule "components/esp32-wifi-manager"]
+	path = components/esp32-wifi-manager
+	url = https://github.com/tonyp7/esp32-wifi-manager.git

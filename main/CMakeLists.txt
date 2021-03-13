@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS "src/helper_funcs.c" "main.c"
     REQUIRED_IDF_TARGETS "esp32s2"
-    INCLUDE_DIRS "include"
+    INCLUDE_DIRS "src"
 )

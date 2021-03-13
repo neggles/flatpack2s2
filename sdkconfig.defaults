@@ -1,25 +1,49 @@
-#
-# flatpack2s2 TWAI GPIOs
-#
+### project and component config
+
+# hardware pin assignments etc
+# defaults are set to match my esp32-cantroller board
 CONFIG_TWAI_TX_GPIO=15
 CONFIG_TWAI_RX_GPIO=16
+# note that this one isn't actually used, but u8g2 needs it set anyway, so pick a GPIO you aren't using
 CONFIG_TWAI_EN_GPIO=17
-# end of flatpack2s2 TWAI GPIOs
 
-#
-# flatpack2s2 I2C GPIOs
-#
 CONFIG_I2C_OLED_SCL=5
 CONFIG_I2C_OLED_SDA=4
 CONFIG_I2C_QWIIC_SCL=1
 CONFIG_I2C_QWIIC_SDA=2
-# end of flatpack2s2 I2C GPIOs
 
-#
-# flatpack2s2 misc. GPIOs
-#
+# Navigation buttons (GPIO0 aka BOOT is used as back button)
 CONFIG_FP2S2_SW_L_GPIO=35
 CONFIG_FP2S2_SW_S_GPIO=36
 CONFIG_FP2S2_SW_R_GPIO=37
+
+# WS2812B-compatible status LED
 CONFIG_FP2S2_RGB_GPIO=38
-# end of flatpack2s2 misc. GPIOs
+
+# wifi manager defaults
+CONFIG_DEFAULT_AP_SSID="flatpack2s2"
+CONFIG_DEFAULT_AP_PASSWORD="twainotcan"
+
+# time zone
+CONFIG_POSIX_TZ="AEST-10AEDT,M10.1.0,M4.1.0/3"
+
+### platform config
+CONFIG_IDF_TARGET="esp32s2"
+
+# set clock speed to 240MHz and RTC clock source to highest-precision internal source
+# power consumption doesn't matter, we're plugged into a 1000W+ power supply,
+# and for dev at least I want all the MIPS i can get...
+CONFIG_ESP32S2_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESP32S2_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_ESP32S2_RTC_CLK_SRC_INT_8MD256=y
+CONFIG_ESP32S2_RTC_CLK_CAL_CYCLES=576
+
+## lwip config
+CONFIG_LWIP_LOCAL_HOSTNAME="flatpack2s2"
+CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
+
+## lvgl config
+CONFIG_LV_TFT_DISPLAY_USER_CONTROLLER_SSD1306=y
+CONFIG_LV_THEME_DEFAULT_INIT_MONO=y
+CONFIG_LV_THEME_DEFAULT_COLOR_PRIMARY=0x0
+CONFIG_LV_THEME_DEFAULT_COLOR_SECONDARY=0xffffff
