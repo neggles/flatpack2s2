@@ -1,39 +1,49 @@
+/**
+ * * IDF Includes
+ */
+// cstd libraries
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 
+// FreeRTOS Components
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+// SDK config
+#include "sdkconfig.h"
+
+// IDF system components
 #include "esp_event.h"
 #include "esp_freertos_hooks.h"
 #include "esp_log.h"
-#include "esp_system.h"
-
 #include "esp_netif.h"
-#include "esp_sntp.h"
 #include "esp_spi_flash.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 
-#include "soc/rtc.h"
+// IDF applications
+#include "esp_sntp.h"
 
+// IDF drivers
 #include "driver/gpio.h"
 #include "driver/i2c.h"
-
 #include "driver/rmt.h"
+#include "driver/temp_sensor.h"
+#include "driver/twai.h"
+#include "soc/rtc.h"
+
+/**
+ * * Project Components
+ */
+// RGB LED strip driver (using RMT peripheral)
 #include "led_strip.h"
 
-#include "driver/temp_sensor.h"
-
-#include "driver/twai.h"
-
-#include "sdkconfig.h"
-
-/* Littlevgl specific */
+// lvgl graphics library
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #    include "lvgl.h"
 #else
@@ -42,10 +52,15 @@
 #include "lvgl_helpers.h"
 #define LV_TICK_PERIOD_MS 1
 
+// ESP Wifi Manager
 #include "wifi_manager.h"
 
-//* shoving fiddly little helper functions in here
+// Extra project source files (helper functions etc.)
 #include "helper_funcs.h"
+
+/**
+ * * App Configuration
+ */
 
 // TZ string for sntp
 #define POSIX_TZ CONFIG_POSIX_TZ
@@ -56,48 +71,73 @@
 // project log tag
 static const char *TAG = "flatpack2s2";
 
-//* Config vars for pin assignments
+// * Pin definitions
 //static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
-//static const int btn_sel   = CONFIG_FP2S2_SW_L_GPIO;
-//static const int btn_right = CONFIG_FP2S2_SW_L_GPIO;
+//static const int btn_enter   = CONFIG_FP2S2_SW_S_GPIO;
+//static const int btn_right = CONFIG_FP2S2_SW_R_GPIO;
 //static const int btn_back  = GPIO_NUM_0;
 
-//* WiFi status event group
+// * Event Group for general status flags
 static EventGroupHandle_t appEventGroup;
-//* event group bit assignments, 24 bits total
+// bit assignments
 static const int WIFI_CONNECTED_BIT = BIT0;
-//static const int TIME_SYNCED_BIT    = BIT1;
+static const int TIME_SYNCED_BIT    = BIT1;
 //static const int CAN_READY_BIT      = BIT10;
-//static const int DISP_READY_BIT     = BIT11;
+static const int DISP_READY_BIT = BIT11;
 static const int TEMP_READY_BIT = BIT12;
+static const int LED_READY_BIT  = BIT13;
 
-//* GUI task semaphore
+// * GUI task semaphore
 SemaphoreHandle_t xDisplaySemaphore;
 
-//* Global variables - only 32-bit values, so reads and writes are atomic
-static float cur_internal_temp;
+
+/**
+ * * Static data (strings etc.)
+ */
+const char *fp2_alarm0_strings[] = {"OVS_LOCK_OUT", "MOD_FAIL_PRIMARY", "MOD_FAIL_SECONDARY", "HIGH_MAINS", "LOW_MAINS", "HIGH_TEMP", "LOW_TEMP", "CURRENT_LIMIT"};
+const char *fp2_alarm1_strings[] = {"INTERNAL_VOLTAGE", "MODULE_FAIL", "MOD_FAIL_SECONDARY", "FAN1_SPEED_LOW", "FAN2_SPEED_LOW", "SUB_MOD1_FAIL", "FAN3_SPEED_LOW", "INNER_VOLT"};
 
 
 /**
- * @brief static function prototypes
+ * * Global variables
+ * ! Reads and writes to globals are only atomic for 32-bit values !
  */
-// tasks
+// esp internal
+static float esp_internal_temp;
+
+// fp2 power supply status
+static float fp2_input_volts;
+static float fp2_output_volts;
+static float fp2_output_amps;
+static float fp2_output_watts;
+static float fp2_inlet_temp;
+static float fp2_outlet_temp;
+
+
+/**
+ * * Static function prototypes
+ */
+// Tasks
 static void displayTask(void *pvParameter);
-static void lv_tick_task(void *arg);
+static void lvTickTimer(void *ignore);
 static void rgbTask(void *ignore);
 static void networkTask(void *ignore);
-static void sntpTask(void *ignore);
+static void timeSyncTask(void *ignore);
 static void tempSensorTask(void *ignore);
-// funcs
+//static void twaiTask(void *ignore);
+
+// Functions
 static void lvAppCreate(void);
-// callbacks
-static void cb_connection_ok(void *pvParameter);
-static void cb_connection_lost(void *pvParameter);
-static void cb_time_sync_event(struct timeval *tv);
+
+// Callbacks
+static void cb_netConnected(void *pvParameter);
+static void cb_netDisconnected(void *pvParameter);
+static void cb_timeSyncEvent(struct timeval *tv);
 
 
 /**
- * @brief app main func (does not autoloop)
+ * * app_main function - run on startup
+ * TODO: ...most of this tbh.
  */
 void app_main(void) {
     printf("flatpack2s2 startup!\n");
@@ -128,54 +168,46 @@ void app_main(void) {
     xTaskCreate(&networkTask, "network_init", 1024 * 2, NULL, 5, NULL);
 
     //* Create SNTP management task
-    xTaskCreate(&sntpTask, "sntp", 1024 * 2, NULL, 2, NULL);
+    xTaskCreate(&timeSyncTask, "sntp", 1024 * 2, NULL, 2, NULL);
 
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "temp_sensor", 1024 * 2, NULL, 2, NULL);
 }
 
 
-//* Task definitions
-
-void sntpTask(void *ignore) {
-    static const char *TASKTAG = "sntpTask";
+/**
+ * * Application tasks
+ */
+// SNTP setup & run task
+void timeSyncTask(void *ignore) {
+    static const char *TASKTAG = "timeSyncTask";
     ESP_LOGI(TASKTAG, "sntp task starting");
 
     //* Set time zone and SNTP operating parameters
     setenv("TZ", POSIX_TZ, 1);
     tzset();
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, CONFIG_SNTP_SERVER);
-    sntp_set_time_sync_notification_cb(cb_time_sync_event);
-    ESP_LOGI(TASKTAG, "sntp config set, waiting for wifi");
 
     // wait for wifi connected bit in event group
+    ESP_LOGI(TASKTAG, "TZ set, waiting for wifi");
     xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    // start SNTP
-    ESP_LOGI(TASKTAG, "starting sntp service");
+    // configure ant start SNTP
+    ESP_LOGI(TASKTAG, "Starting sntp service");
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, CONFIG_SNTP_SERVER);
+    sntp_set_time_sync_notification_cb(cb_timeSyncEvent);
     sntp_init();
 
-    char strftime_buf[64];
+    ESP_LOGI(TASKTAG, "Waiting for system time to be set...", retry, retry_count);
+    xEventGroupWaitBits(appEventGroup, TIME_SYNCED_BIT,pdFALSE, pdTRUE, portMAX_DELAY);
 
-    // wait for the service to set the time
-    time_t    now         = 0;
-    struct tm timeinfo    = {0};
-    int       retry       = 0;
-    const int retry_count = 10;
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
-        ESP_LOGI(TASKTAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        vTaskDelay(pdMS_TO_TICKS(3000));
-    }
-    time(&now);
-    localtime_r(&now, &timeinfo);
-
-    strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
-
-    ESP_LOGI(TASKTAG, "current date/time: %s", strftime_buf);
+    ESP_LOGI(TASKTAG, "System time set, exiting");
     vTaskDelete(NULL);
 }
 
+/**
+ * * lvgl display management task
+ */
 void displayTask(void *pvParameter) {
     static const char *TASKTAG = "displayTask";
     ESP_LOGI(TASKTAG, "display task begin");
@@ -193,7 +225,7 @@ void displayTask(void *pvParameter) {
     static lv_color_t *  buf2 = NULL;
     static lv_disp_buf_t disp_buf;
     /* Actual size in pixels, not bytes. */
-    uint32_t             size_in_px = DISP_BUF_SIZE * 8;
+    uint32_t size_in_px = DISP_BUF_SIZE * 8;
 
     /* Initialize the working buffer depending on the selected display.
      * NOTE: buf2 == NULL when using monochrome displays. */
@@ -213,24 +245,29 @@ void displayTask(void *pvParameter) {
 
     /* Create and start a periodic timer interrupt to call lv_tick_inc */
     const esp_timer_create_args_t periodic_timer_args = {
-        .callback = &lv_tick_task,
+        .callback = &lvTickTimer,
         .name     = "periodic_gui"};
     esp_timer_handle_t periodic_timer;
     ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, LV_TICK_PERIOD_MS * 1000));
 
-    // start the app
+    // set up initial screen state
     lvAppCreate();
 
-    while (1) {
-        /* Delay 1 tick (assumes FreeRTOS tick is 10ms */
-        vTaskDelay(pdMS_TO_TICKS(10));
+    // set display ready bit
+    xEventGroupSetBits(appEventGroup, DISP_READY_BIT);
 
-        /* Try to take the semaphore, call lvgl related function on success */
+    /* Delay 1 tick (assumes FreeRTOS tick is 10ms */
+    vTaskDelay(pdMS_TO_TICKS(10));
+    static uint32_t lv_task_delay = 0;
+    while (1) {
+        /* Try to take the semaphore, call lvgl task handler on success */
         if (pdTRUE == xSemaphoreTake(xDisplaySemaphore, portMAX_DELAY)) {
-            lv_task_handler();
+            lv_task_delay = lv_task_handler();
             xSemaphoreGive(xDisplaySemaphore);
         }
+        if (lv_task_delay < 10) lv_task_delay = 10;
+        vTaskDelay(pdMS_TO_TICKS(lv_task_delay));
     }
 
     /* A task should NEVER return */
@@ -238,16 +275,18 @@ void displayTask(void *pvParameter) {
     vTaskDelete(NULL);
 }
 
-static void lv_tick_task(void *arg) {
-    (void)arg;
-
+// lvgl tick timer
+static void lvTickTimer(void *ignore) {
+    (void)ignore;
     lv_tick_inc(LV_TICK_PERIOD_MS);
 }
 
+// setup initial display state
 static void lvAppCreate(void) {
     static const char *TASKTAG = "lvAppCreate";
-    /* use a pretty small demo for monochrome displays */
-    /* Get the current screen  */
+    ESP_LOGI(TASKTAG, "setting up initial display state");
+
+    /* Get the current screen */
     lv_obj_t *scr = lv_disp_get_scr_act(NULL);
 
     /*Create a Label on the currently active screen*/
@@ -261,11 +300,14 @@ static void lvAppCreate(void) {
      * 0, 0 at the end means an x, y offset after alignment*/
     lv_obj_align(label1, NULL, LV_ALIGN_CENTER, 0, 0);
 
-    ESP_LOGI(TASKTAG, "completed lvAppCreate");
+    ESP_LOGI(TASKTAG, "complete");
 }
 
-void tempSensorTask(void *arg) {
-    static const char *TASKTAG = "rgbTask";
+/**
+ * * ESP Internal Temp Sensor task
+ */
+void tempSensorTask(void *ignore) {
+    static const char *TASKTAG = "tempSensorTask";
     ESP_LOGI(TASKTAG, "Initializing temp sensor");
 
     temp_sensor_config_t temp_sensor = TSENS_CONFIG_DEFAULT();
@@ -277,11 +319,11 @@ void tempSensorTask(void *arg) {
     temp_sensor_start();
     ESP_LOGI(TAG, "Initialization complete");
 
-    temp_sensor_read_celsius(&cur_internal_temp);
+    temp_sensor_read_celsius(&esp_internal_temp);
     xEventGroupSetBits(appEventGroup, TEMP_READY_BIT);
     while (true) {
-        temp_sensor_read_celsius(&cur_internal_temp);
-        ESP_LOGI(TASKTAG, "current chip temp %.3f°C", cur_internal_temp);
+        temp_sensor_read_celsius(&esp_internal_temp);
+        ESP_LOGI(TASKTAG, "current chip temp %.3f°C", esp_internal_temp);
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 
@@ -289,7 +331,12 @@ void tempSensorTask(void *arg) {
     vTaskDelete(NULL);
 }
 
-void rgbTask(void *arg) {
+
+/**
+ * * RGB LED control task
+ * TODO: Make this receive color set requests instead of just doing a rainbow fade
+ */
+void rgbTask(void *ignore) {
     static const char *TASKTAG = "rgbTask";
 
     uint32_t red   = 0;
@@ -337,18 +384,17 @@ void networkTask(void *arg) {
     // start the wifi manager
     wifi_manager_start();
     // register wifi callbacks
-    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
-    wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_connection_lost);
+    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_netConnected);
+    wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_netDisconnected);
     // done
     vTaskDelete(NULL);
 }
 
 
-//* Callbacks
 /**
  * @brief wifi connection manager callbacks
  */
-void cb_connection_ok(void *pvParameter) {
+void cb_netConnected(void *pvParameter) {
     ip_event_got_ip_t *param = (ip_event_got_ip_t *)pvParameter;
     xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
 
@@ -359,13 +405,31 @@ void cb_connection_ok(void *pvParameter) {
     ESP_LOGI(TAG, "wifi connected, yay! acquired IP address: %s", str_ip);
 }
 
-void cb_connection_lost(void *pvParameter) {
+void cb_netDisconnected(void *pvParameter) {
     wifi_event_sta_disconnected_t *param = (wifi_event_sta_disconnected_t *)pvParameter;
     xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
 
     ESP_LOGW(TAG, "wifi disconnected, boo! reason:%d", param->reason);
 }
 
-void cb_time_sync_event(struct timeval *tv) {
-    ESP_LOGI(TAG, "Notification of a time synchronization event");
+void cb_timeSyncEvent(struct timeval *tv) {
+    static const char *TASKTAG = "cb_timeSyncEvent";
+    ESP_LOGI(TAG, "SNTP sync event notification");
+
+    if ((xEventGroupGetBits(appEventGroup) & BIT1) == 0) xEventGroupSetBits(appEventGroup, TIME_SYNCED_BIT);
+
+    char      strftime_sntp[64];
+    time_t    sntp     = (time_t)tv->tv_sec;
+    struct tm sntpinfo = {0};
+    localtime_r(&sntp, &sntpinfo);
+    strftime(strftime_sntp, sizeof(strftime_sntp), "%c", &sntpinfo);
+    ESP_LOGI(TASKTAG, "received date/time: %s", strftime_sntp);
+
+    char      strftime_now[64];
+    time_t    now      = 0;
+    struct tm timeinfo = {0};
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    strftime(strftime_now, sizeof(strftime_now), "%c", &timeinfo);
+    ESP_LOGI(TASKTAG, "system date/time: %s", strftime_now);
 }

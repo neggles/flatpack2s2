@@ -12,6 +12,7 @@
   AlignEscapedNewlines: Left,
   AllowAllParametersOfDeclarationOnNextLine: true,
   AllowShortFunctionsOnASingleLine: Empty,
+  AllowShortIfStatementsOnASingleLine: WithoutElse,
   BinPackParameters: true,
   BreakStringLiterals: false,
   FixNamespaceComments: false,
