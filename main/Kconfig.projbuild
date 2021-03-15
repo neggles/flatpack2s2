@@ -8,6 +8,7 @@ menu "flatpack2s2 Project Configuration"
                 POSIX time zone string for system. I might implement a tz db later idk
 
     endmenu #system
+
     menu "TWAI"
         config TWAI_TX_GPIO
             int "TWAI TX GPIO"
@@ -29,24 +30,6 @@ menu "flatpack2s2 Project Configuration"
     endmenu
 
     menu "I2C"
-
-        config I2C_OLED_SCL
-            int "I2C OLED SCL GPIO"
-            default 5
-            help
-                Selects GPIO used for SSD13xx I2C OLED SCL line
-
-        config I2C_OLED_SDA
-            int "I2C OLED SDA GPIO"
-            default 4
-            help
-                Selects GPIO used for SSD13xx I2C OLED SDA line
-        config I2C_OLED_RST
-            int "I2C OLED SDA GPIO"
-            default 40
-            help
-                Selects GPIO used for SSD13xx I2C OLED RST line - this is probably not actually present and you can leave this untouched.
-                Just make sure it's an unassigned GPIO.
 
         config I2C_QWIIC_SCL
             int "Qwiic Connector SCL GPIO"
