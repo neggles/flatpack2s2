@@ -11,19 +11,44 @@
 
 
 # Conventions in This Document
-RX is a message from the power supply to the transceiver  
-TX is a message from the transceiver to the power supply
+### **MSG** is a message from the power supply to the controller. 
+### **CMD** is a message from the transceiver to the power supply.
 
+<br />
 
 # Hardware
-The Flatpack2's CAN bus runs at 125kbit/s, using an extended ID field. The bus is relative to the PSU's negative output rail. Failure to connect the negative of the supply with the ground of your CAN transceiver will likely blow the transceiver up (this took me 3 MCP2551s to realize).
+The Flatpack2's CAN bus runs at 125kbps with 29-bit extended IDs, referenced to the PSU's negative rail.
 
+If your breakout PCB exposes GNDD (the third small contact next to CANH and CANL), connect your transceiver GND to GNDD.  
+If GNDD is not available, connect your transceiver GND to the supply's VOUT-.
 
-# Messages
-## (TX) Log in, `0x050048XX`
-Sent to log into a power supply. Unknown if address is a broadcast or a specific message to a single power supply. After approximately 15 seconds, the power supply will log out again if it does not recieve another log in message.
+**Failure to tie your transceiver's GND to GNDD or VOUT- will probably brutally murder your transceiver.**
 
-The ID of the supply is set by the last byte of the address, where `XX = ID * 4`. The ID ranges from `0x01` to `0x3F` (resulting in a range for `XX` of `0x04` to `0xFC`).
+If possible, use a CAN transceiver which can tolerate in excess of 55V bus fault voltage such as the MAX3305x and its 5V siblings; this makes transceiver damage less likely in the event of it being miswired.
+
+I am using a MAX3051 in my application but the drop-in replacement MAX33053 would be a better idea.
+
+<br />
+
+# Notes
+
+I can't confirm whether any of this protocol data is correct for models other than the Flatpack2 HE 48V/2000W and Flatpack2 HE 48V/3000W. That said, anecdotal evidence from posters on various forums suggests the Flatpack S models are command-compatible and will work as well.
+
+I'd expect it to work with any black-fronted Flatpack2 (HE/SHE) or Flatpack S model, but am unable to confirm.
+
+<br />
+
+# ID-less Messages
+These messages do not contain a PSU ID in their identity field, and are primarily used to discover PSUs and assign addresses to them.
+
+<br />
+
+## **CMD** Log in, `0x050048XX`
+Log in to a power supply and assign it a CAN ID. Serial number payload chooses which supply to target.
+
+PSU ID is assigned by setting `XX` to (ID * 4), e.g. sending message ID `0x05004804` assigns PSU ID of `0x01` for future commands.  
+
+Allowable ID range is `0x01` to `0x3F`, or an `XX` of `0x04` through `0xFC`, and the power supply will log out if no login packet is received for (64 * 0.2) seconds.
 
 <table>
     <tr>
@@ -34,9 +59,12 @@ The ID of the supply is set by the last byte of the address, where `XX = ID * 4`
     </tr>
 </table>
 
+<br />
 
-## (RX) CAN bus introduction (??), `0x0500XXXX`
-Sent approximately every two seconds. `XXXX` are usually the last four digits of the power supply's serial number. (Doesn't always exactly match - supply ending with 5418 sends 1418)
+## **MSG** CAN hello packet, `0x0500XXXX`
+A supply that is not logged in will send this packet every two seconds or so.
+
+`XXXX` is the last two bytes of the PSU's serial number.
 
 <table>
     <tr>
@@ -47,35 +75,48 @@ Sent approximately every two seconds. `XXXX` are usually the last four digits of
     </tr>
 </table>
 
+<br />
+<br />
 
-## (RX) Status, `0x05XX40YY`
-Sent by the power supply after it is logged into, and contains information about the current state of the power supply.
+# PSU-specific Messages
+These messages contain the PSU's assigned ID number, `XX`, in their message ID.
 
-`XX` is the power supply's ID.
+In theory you can also control multiple supplies at once (if they're logged in) by sending to ID `0xFF` but I've not tested that.
+
+<br />
+
+## **MSG** Status, `0x05XX40YY`
+Once a power supply is logged in and has an address assigned, it will send these packets every 0.2 seconds exactly 64 times.
+
+Transmit count is reset to 64 whenever a login is received; logging in every 10 seconds (or 5 to be safe) should be adequate to stay logged in.
+
+Current, output voltage and input voltage are little endian byte order (low byte first).
+
 
 | Value of `YY` | Power supply state           |
 | ------------- | ---------------------------- |
-| `0x04`        | Normal operation             |
-| `0x08`        | Warning                      |
+| `0x04`        | Normal (Constant Voltage)    |
+| `0x08`        | Normal (Constant Current)    |
 | `0x0C`        | Alarm                        |
 | `0x10`        | Walk in (voltage ramping up) |
 
-Current, output voltage and input voltage are stored in little endian (LSB first). All temperatures are in degrees Celsius. Current is in deciamps (i.e. 21.2A is 212). Output voltage is in centivolts (i.e. 48.52V is 4852). Input voltage is in volts.
 
 <table>
     <tr>
         <td><b>Byte</b></td> <td>0</td> <td>1</td> <td>2</td> <td>3</td> <td>4</td> <td>5</td> <td>6</td> <td>7</td>
     </tr>
     <tr>
-        <td><b>Value</b></td> <td>Intake temperature</td> <td colspan='2'>Current</td> <td colspan='2'>Output voltage</td> <td colspan='2'>Input voltage</td> <td>Output temperature</td>
+        <td><b>Value</b></td> <td>Intake Temp</td> <td colspan='2'>Iout</td> <td colspan='2'>Vout</td> <td colspan='2'>Vin</td> <td>Exhaust Temp</td>
+    </tr>
+    <tr>
+        <td><b>Unit</b></td> <td>°C</td> <td colspan='2'>dA (A * 0.1)</td> <td colspan='2'>cV (V * 0.1)</td> <td colspan='2'>Vrms (AC)</td> <td>°C</td>
     </tr>
 </table>
 
+<br />
 
-## (RX) Log in request (??), `0x05XX4400`
-Sent approximately every 15 seconds. Seems to be the power supply introducing itself to the CAN bus network.
-
-`XX` is the power supply's ID.
+## **MSG** Login request / start-up notification, `0x05XX4400`
+Sent by a logged-out power supply every ten seconds or so. Similar to the CAN hello packet, but uses supply's pre-set ID.
 
 <table>
     <tr>
@@ -86,13 +127,41 @@ Sent approximately every 15 seconds. Seems to be the power supply introducing it
     </tr>
 </table>
 
+<br />
 
-## (TX) Set default voltage, `0x05XX9C00`
+## **CMD** Set voltage and current limits, `0x05xx4804`
+Sent to the power supply to immediately set output voltage and current limits.  
+**If the supply logs out, these settings will be lost - default voltage will apply, and current limit will be set to factory maximum.**
+
+Max current is the point at which the supply will switch from CV to CC modes.  
+**Please note that the supply will not go below its minimum output voltage in CC mode!**
+
+Desired voltage is the output voltage setpoint.
+
+Measured voltage is for calibration/feedback; if you do not have a feedback voltage source, it should be equal to desired voltage.
+
+OVP voltage is the voltage at which over-voltage protection will enable & cause the supply to shut down. Set this to your supply's maximum rated output voltage.
+
+Max current is in deciAmps (A * 0.1), voltages are all in centiVolts (V * 0.1), all in little-endian byte order.
+
+<table>
+    <tr>
+        <td><b>Byte</b></td> <td>0</td> <td>1</td> <td>2</td> <td>3</td> <td>4</td> <td>5</td> <td>6</td> <td>7</td>
+    </tr>
+    <tr>
+        <td><b>Value</b></td> <td colspan='2'>Max Current</td> <td colspan='2'>Measured Voltage</td> <td colspan='2'>Desired Voltage</td> <td colspan='2'>OVP Voltage</td>
+    </tr>
+    <tr>
+        <td><b>Unit</b></td> <td colspan='2'>dA (A * 0.1)</td> <td colspan='2'>cV (V * 0.1)</td> <td colspan='2'>cV (V * 0.1)</td> <td colspan='2'>cV (V * 0.1)</td>
+    </tr>
+</table>
+
+<br />
+
+## **CMD** Set default voltage, `0x05XX9C00`
 Sent to the power supply to set its default voltage. Does not take effect until the supply is logged out. If the supply is logged in when the command is sent, the voltage is set when the log in times out. If it is not logged in, the voltage will be set when the supply logs in then times out.
 
-`XX` is the power supply's ID.
-
-The voltage is stored in little-endian and is in centivolts (i.e. 48.52V is 4852).
+Voltage is stored in the same format as the status message - centivolts (V * 0.1) in little-endian byte order.
 
 <table>
     <tr>
@@ -103,37 +172,43 @@ The voltage is stored in little-endian and is in centivolts (i.e. 48.52V is 4852
     </tr>
 </table>
 
+<br />
 
-## (TX) Alarms/warnings information request, `0x05XXBFFC`
-Sent to the power supply to request information on the current warnings and alarms. Should be sent after recieving an `0x05XX40YY` message where `YY = 08` or `YY = 0C` (i.e a warning or alarm is present). Byte 2 determines if warning or alarm information is returned.
+## **CMD** Alert request, `0x05XXBFFC`
+Requests current alerts (warnings/alarms) from targeted power supply. 
+
+Send this after receiving a status message with a last byte of `0x08` or `0x0C` to return current alert flags.
+
+2nd byte of payload dictates whether query is for warning or critical alerts, and can be copied from the last byte of the status message.
 
 |       |      |                                |      |
 | ----- | ---- | ------------------------------ | ---- |
 | Byte  | 0    | 1                              | 2    |
 | Value | 0x08 | 0x04 (warnings), 0x08 (alarms) | 0x00 |
 
+<br />
 
-## (RX) Alarms/warnings information, `0x05XXBFFC`
-Sent by the power supply in response to recieving an `0x05XXBFFC` message. Contains information about any alarms or warnings present, depending on the contents of the request message.
+## **MSG** Alert information, `0x05XXBFFC`
+Response to CMD `0x05XXBFFC`, containing requested alert information.
 
-`XX` is the power supply's ID.
+2nd byte indicates whether flag bits are warning or critical, and is equal to 2nd byte of CMD packet.
 
-|       |      |                                |      |                                |                                |      |      |
-| ----- | ---- | ------------------------------ | ---- | ------------------------------ | ------------------------------ | ---- | ---- |
-| Byte  | 0    | 1                              | 2    | 3                              | 4                              | 5    | 6    |
-| Value | 0x0E | 0x04 (warnings), 0x08 (alarms) | 0x00 | Warning/alarm bit field byte 1 | Warning/alarm bit field byte 2 | 0x00 | 0x00 |
+|       |      |                                  |      |                   |                   |      |      |
+| ----- | ---- | -------------------------------- | ---- | ----------------- | ----------------- | ---- | ---- |
+| Byte  | 0    | 1                                | 2    | 3                 | 4                 | 5    | 6    |
+| Value | 0x0E | 0x04 (Warning) / 0x08 (Critical) | 0x00 | Alert flag byte 1 | Alert flag byte 2 | 0x00 | 0x00 |
 
+<br />
 
-## Warnings/Alarms
-Bit 0 is the LSB.
+Alert flag bit mapping:
 
-| Bit | Warning/alarm bit field byte 1 | Warning/alarm bit field 2 |
-| --- | ------------------------------ | ------------------------- |
-| 0   | OVS Lock Out                   | Internal Voltage          |
-| 1   | Mod Fail Primary               | Module Fail               |
-| 2   | Mod Fail Secondary             | Mod Fail Secondary        |
-| 3   | High Mains                     | Fan 1 Speed Low           |
-| 4   | Low Mains                      | Fan 2 Speed Low           |
-| 5   | High Temp                      | Sub Mod1 Fail             |
-| 6   | Low Temp                       | Fan 3 Speed Low           |
-| 7   | Current Limit                  | Inner Volt                |
+| Bit | Alert flag byte 1  | Alert flag byte 2  |
+| --- | ------------------ | ------------------ |
+| 0   | OVS Lock Out       | Internal Voltage   |
+| 1   | Mod Fail Primary   | Module Fail        |
+| 2   | Mod Fail Secondary | Mod Fail Secondary |
+| 3   | High Mains         | Fan 1 Speed Low    |
+| 4   | Low Mains          | Fan 2 Speed Low    |
+| 5   | High Temp          | Sub Mod1 Fail      |
+| 6   | Low Temp           | Fan 3 Speed Low    |
+| 7   | Current Limit      | Inner Volt         |
