@@ -13,5 +13,5 @@ sdkconfig.old
 .history
 .ionide
 
-# putting stuff i'm using as references in here
-examples/
+# putting stuff i'm using as references and notes etc in here
+misc/

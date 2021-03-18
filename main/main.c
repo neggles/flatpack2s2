@@ -2,6 +2,7 @@
  * * IDF Includes
  */
 // cstd libraries
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,15 @@
 #include "esp_spi_flash.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+
+#include "argtable3/argtable3.h"
+#include "cmd_nvs.h"
+#include "cmd_system.h"
+#include "esp_console.h"
+#include "esp_vfs_cdcacm.h"
+#include "linenoise/linenoise.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 // IDF applications
 #include "esp_sntp.h"
@@ -67,6 +77,7 @@ static const char *APP_CREATE_TAG    = "lvAppCreate";
 static const char *DISP_TASK_TAG     = "displayTask";
 static const char *LED_TASK_TAG      = "ledTask";
 static const char *TIMESYNC_TASK_TAG = "timeSyncTask";
+static const char *CONSOLE_TASK_TAG  = "usbConsoleTask";
 static const char *TWAI_TASK_TAG     = "twaiTask";
 static const char *LOGIN_TASK_TAG    = "fp2LoginTask";
 static const char *TWAI_TX_TASK_TAG  = "twaiTxTask";
@@ -114,6 +125,7 @@ static const int TIMESYNC_RUN_BIT   = BIT10;
 static const int DISP_RUN_BIT       = BIT11;
 static const int TEMP_RUN_BIT       = BIT12;
 static const int LED_RUN_BIT        = BIT13;
+static const int CONSOLE_RUN_BIT    = BIT14;
 
 // * Semaphores and mutexes
 SemaphoreHandle_t xDisplaySemaphore; // lvgl2 mutex
@@ -188,14 +200,18 @@ static void timeSyncTask(void *ignore);
 static void tempSensorTask(void *ignore);
 static void twaiTask(void *ignore);
 static void fp2LoginTask(void *ignore);
+static void consoleTask(void *ignore);
 
 // Functions
 static void lvAppCreate(void);
+static void initialize_nvs(void);
+static void initialize_console(void);
 
 // Callbacks
 static void cb_netConnected(void *pvParameter);
 static void cb_netDisconnected(void *pvParameter);
 static void cb_timeSyncEvent(struct timeval *tv);
+static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 
 
 /****************************************************************
@@ -206,24 +222,16 @@ static void cb_timeSyncEvent(struct timeval *tv);
 void app_main(void) {
     printf("flatpack2s2 startup!\n");
 
-    //* initialize the wifi event group
+    //* initialize the main app event group
     appEventGroup = xEventGroupCreate();
 
-    //* Print chip information
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    rtc_cpu_freq_config_t clk_config;
-    rtc_clk_cpu_freq_get_config(&clk_config);
-    printf("ESP32-S2 at %dMHz, WiFi%s%s, ",
-           clk_config.freq_mhz,
-           (chip_info.features & CHIP_FEATURE_BT) ? "/BT" : "",
-           (chip_info.features & CHIP_FEATURE_BLE) ? "/BLE" : "");
-    printf("silicon revision %d, ", chip_info.revision);
-    printf("%dMB %s flash\n", spi_flash_get_chip_size() / (1024 * 1024),
-           (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
+    //* start the command-line console task and wait for init
+    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 4, NULL);
+
+    xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 10, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 9, NULL);
 
     //* Create TWAI setup task
     xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 8, NULL);
@@ -278,6 +286,7 @@ void displayTask(void *pvParameter) {
     disp_drv.set_px_cb  = disp_driver_set_px;
     disp_drv.buffer     = &disp_buf;
     lv_disp_drv_register(&disp_drv);
+    lv_log_register_print_cb(&cb_lvglLog);
 
     /* Create and start a periodic timer interrupt to call lv_tick_inc from lvTickTimer() */
     const esp_timer_create_args_t lvgl_timer_args = {
@@ -316,8 +325,30 @@ void displayTask(void *pvParameter) {
 }
 
 // lvgl tick timer callback
-static void lvTickTimer(void *ignore) {
+void lvTickTimer(void *ignore) {
     lv_tick_inc(LV_TICK_PERIOD_MS);
+}
+
+// lvgl log callback
+void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
+    // use ESP_LOGx macros
+    switch (level) {
+        case LV_LOG_LEVEL_INFO:
+            ESP_LOGI(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            break;
+        case LV_LOG_LEVEL_WARN:
+            ESP_LOGW(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            break;
+        case LV_LOG_LEVEL_ERROR:
+            ESP_LOGE(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            break;
+        case LV_LOG_LEVEL_TRACE:
+            ESP_LOGV(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            break;
+        default:
+            ESP_LOGI(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            break;
+    }
 }
 
 // setup initial display state
@@ -429,7 +460,40 @@ void twaiTask(void *ignore) {
     vTaskDelete(NULL);
 }
 
+// convert FP2 alert bits to strings
+void fp2AlertMsgProcess(uint8_t alertBuf[]) {
+    uint8_t alarm_byte_0 = alertBuf[3];
+    uint8_t alarm_byte_1 = alertBuf[4];
+    switch (alertBuf[1]) {
+        case FP2_STATUS_WARN:
+            ESP_LOGW(FP2_ALERT_TAG, "PSU has warnings:");
+            for (int i = 0; i < 8; i++) {
+                if (alarm_byte_0 & (1 << i)) {
+                    ESP_LOGW(FP2_ALERT_TAG, "%s", fp2_alerts0_str[i]);
+                }
+                if (alarm_byte_1 & (1 << i)) {
+                    ESP_LOGW(FP2_ALERT_TAG, "%s", fp2_alerts1_str[i]);
+                }
+            }
+            break;
+        case FP2_STATUS_ALARM:
+            ESP_LOGE(FP2_ALERT_TAG, "PSU has errors:");
+            for (int i = 0; i < 8; i++) {
+                if (alarm_byte_0 & (1 << i)) {
+                    ESP_LOGE(FP2_ALERT_TAG, "%s", fp2_alerts0_str[i]);
+                }
+                if (alarm_byte_1 & (1 << i)) {
+                    ESP_LOGE(FP2_ALERT_TAG, "%s", fp2_alerts1_str[i]);
+                }
+            }
+            break;
+    }
+}
 
+/****************************************************************
+ * * flatpack2 login loop task
+ * TODO: make sure this like, works
+ */
 void fp2LoginTask(void *pvParameter) {
     // get passed parameter
     flatpack2_t *flatpack2 = (flatpack2_t *)pvParameter;
@@ -466,36 +530,6 @@ void fp2LoginTask(void *pvParameter) {
         vTaskDelayUntil(&xLastLoginTime, xTaskInterval);
     }
 }
-
-void fp2AlertMsgProcess(uint8_t alertBuf[]) {
-    uint8_t alarm_byte_0 = alertBuf[3];
-    uint8_t alarm_byte_1 = alertBuf[4];
-    switch (alertBuf[1]) {
-        case FP2_STATUS_WARN:
-            ESP_LOGW(FP2_ALERT_TAG, "PSU has warnings:");
-            for (int i = 0; i < 8; i++) {
-                if (alarm_byte_0 & (1 << i)) {
-                    ESP_LOGW(FP2_ALERT_TAG, "%s", fp2_alerts0_str[i]);
-                }
-                if (alarm_byte_1 & (1 << i)) {
-                    ESP_LOGW(FP2_ALERT_TAG, "%s", fp2_alerts1_str[i]);
-                }
-            }
-            break;
-        case FP2_STATUS_ALARM:
-            ESP_LOGE(FP2_ALERT_TAG, "PSU has errors:");
-            for (int i = 0; i < 8; i++) {
-                if (alarm_byte_0 & (1 << i)) {
-                    ESP_LOGE(FP2_ALERT_TAG, "%s", fp2_alerts0_str[i]);
-                }
-                if (alarm_byte_1 & (1 << i)) {
-                    ESP_LOGE(FP2_ALERT_TAG, "%s", fp2_alerts1_str[i]);
-                }
-            }
-            break;
-    }
-}
-
 
 /**
  * * RGB LED control task
@@ -658,4 +692,114 @@ void tempSensorTask(void *ignore) {
         temp_sensor_read_celsius(&esp_internal_temp);
     }
     vTaskDelete(NULL);
+}
+
+/****************************************************************
+ * * Command line console task
+ */
+void consoleTask(void *ignore) {
+    //* Initialize console
+    initialize_nvs();
+    initialize_console();
+    /* Register commands */
+    esp_console_register_help_command();
+    register_system_common();
+    register_system_sleep();
+    register_nvs();
+
+    /**
+     * Prompt to be printed before each line.
+     * This can be customized, made dynamic, etc.
+     */
+    const char *prompt = LOG_COLOR_I CONFIG_IDF_TARGET "> " LOG_RESET_COLOR;
+
+    printf("\n"
+           "Welcome to flatpack2s2.\n"
+           "Type 'help' to get the list of commands.\n"
+           "Use UP/DOWN arrows to navigate through command history.\n"
+           "Press TAB when typing command name to auto-complete.\n");
+
+    /* Figure out if the terminal supports escape sequences */
+    int probe_status = linenoiseProbe();
+    if (probe_status) { /* zero indicates success */
+        printf("\n"
+               "Your terminal application does not support escape sequences.\n"
+               "Line editing and history features are disabled.\n"
+               "On Windows, try using Putty instead.\n");
+        linenoiseSetDumbMode(1);
+#if CONFIG_LOG_COLORS
+        /* Since the terminal doesn't support escape sequences, don't use color codes in the prompt. */
+        prompt = CONFIG_IDF_TARGET "> ";
+#endif //CONFIG_LOG_COLORS
+    }
+
+    /* Main loop */
+    while (true) {
+        /* Get a line using linenoise. Line is returned when ENTER is pressed. */
+        char *line = linenoise(prompt);
+        if (line == NULL) { /* Ignore empty lines */
+            continue;
+        }
+        /* Add the command to the history */
+        linenoiseHistoryAdd(line);
+
+        /* Try to run the command */
+        int       ret;
+        esp_err_t err = esp_console_run(line, &ret);
+        if (err == ESP_ERR_NOT_FOUND) {
+            printf("Unrecognized command\n");
+        } else if (err == ESP_ERR_INVALID_ARG) {
+            // command was empty
+        } else if (err == ESP_OK && ret != ESP_OK) {
+            printf("Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
+        } else if (err != ESP_OK) {
+            printf("Internal error: %s\n", esp_err_to_name(err));
+        }
+        /* linenoise allocates line buffer on the heap, so need to free it */
+        linenoiseFree(line);
+    }
+}
+
+static void initialize_nvs(void) {
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+}
+
+static void initialize_console(void) {
+    /* Disable buffering on stdin */
+    setvbuf(stdin, NULL, _IONBF, 0);
+
+    /* Minicom, screen, idf_monitor send CR when ENTER key is pressed */
+    esp_vfs_dev_cdcacm_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
+    /* Move the caret to the beginning of the next line on '\n' */
+    esp_vfs_dev_cdcacm_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
+
+    /* Enable non-blocking mode on stdin and stdout */
+    fcntl(fileno(stdout), F_SETFL, 0);
+    fcntl(fileno(stdin), F_SETFL, 0);
+
+    /* Initialize the console */
+    esp_console_config_t console_config = {
+        .max_cmdline_args   = 8,
+        .max_cmdline_length = 256,
+#if CONFIG_LOG_COLORS
+        .hint_color = atoi(LOG_COLOR_CYAN)
+#endif
+    };
+    ESP_ERROR_CHECK(esp_console_init(&console_config));
+
+    /* Configure linenoise line completion library. */
+    /* Enable multiline editing. If not set, long commands will scroll within single line. */
+    linenoiseSetMultiLine(1);
+
+    /* Tell linenoise where to get command completions and hints */
+    linenoiseSetCompletionCallback(&esp_console_get_completion);
+    linenoiseSetHintsCallback((linenoiseHintsCallback *)&esp_console_get_hint);
+
+    /* Set command history size */
+    linenoiseHistorySetMaxLen(10);
 }
