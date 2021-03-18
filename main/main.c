@@ -226,27 +226,27 @@ void app_main(void) {
     appEventGroup = xEventGroupCreate();
 
     //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 4, NULL);
+    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 8, NULL);
 
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 9, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 6, NULL);
 
     //* Create TWAI setup task
-    xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 8, NULL);
+    //xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
 
     //* Create RGB LED update task
-    xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 5, NULL);
+    xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 3, NULL);
 
     //* create wifi initialization task
-    xTaskCreate(&networkTask, "network", 1024 * 2, NULL, 5, NULL);
+    //xTaskCreate(&networkTask, "network", 1024 * 2, NULL, 5, NULL);
 
     //* Create SNTP management task
-    xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
+    //xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
 
     //* Create temp sensor polling task
-    xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, 2, NULL);
+    //xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, 2, NULL);
 }
 
 
@@ -365,12 +365,17 @@ static void lvAppCreate(void) {
     lv_obj_t *label1 = lv_label_create(scr, NULL);
 
     /*Modify the Label's text*/
-    lv_label_set_text(label1, "flatpack2s2\nv");
+    lv_label_set_text(label1, "flatpack2s2");
+
+    /*Create a Preloader object*/
+    lv_obj_t * preload = lv_spinner_create(lv_scr_act(), NULL);
+    lv_obj_set_size(preload, 32, 32);
+    lv_obj_align(preload, NULL, LV_ALIGN_CENTER, 0, -8);
 
     /* Align the Label to the center
      * NULL means align on parent (which is the screen now)
      * 0, 0 at the end means an x, y offset after alignment*/
-    lv_obj_align(label1, NULL, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(label1, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -2);
 
     ESP_LOGI(APP_CREATE_TAG, "complete");
 }
@@ -410,7 +415,11 @@ void twaiTask(void *ignore) {
     vTaskDelay(pdMS_TO_TICKS(1));
 
     // Start driver
-    ESP_ERROR_CHECK(twai_start());
+    esp_err_t err = twai_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TWAI_TASK_TAG, "TWAI driver start failed! Giving up on this task.");
+        vTaskDelete(NULL);
+    };
     ESP_LOGI(TWAI_TASK_TAG, "TWAI driver started");
     xEventGroupSetBits(appEventGroup, TWAI_RUN_BIT);
 
@@ -732,6 +741,9 @@ void consoleTask(void *ignore) {
         prompt = CONFIG_IDF_TARGET "> ";
 #endif //CONFIG_LOG_COLORS
     }
+
+    // tell everybody we're on our way
+    xEventGroupSetBits(appEventGroup, CONSOLE_RUN_BIT);
 
     /* Main loop */
     while (true) {
