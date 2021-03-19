@@ -37,6 +37,7 @@
 #include "linenoise/linenoise.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "nvs_sync.h"
 
 // IDF applications
 #include "esp_sntp.h"
@@ -92,8 +93,9 @@ static const char *FP2_ALERT_TAG     = "fp2AlertMessage";
 // TZ string for sntp
 #define POSIX_TZ CONFIG_POSIX_TZ
 
-// WS2812 RGB LED RMT channel
-#define RMT_LED_CHANNEL RMT_CHANNEL_0
+// WS2812 RGB LED
+#define RMT_LED_CHANNEL    RMT_CHANNEL_0
+#define LED_UPDATE_RATE_HZ 50
 
 // TWAI transcever (MAX3051) enable pin, active-low
 #define GPIO_TWAI_EN     CONFIG_TWAI_EN_GPIO
@@ -130,7 +132,7 @@ static const int CONSOLE_RUN_BIT    = BIT14;
 // * Semaphores and mutexes
 SemaphoreHandle_t xDisplaySemaphore; // lvgl2 mutex
 SemaphoreHandle_t xTwaiSemaphore;    // twai mutex
-
+nvs_handle_t      nvsHandle;
 
 /**
  * * Flatpack2 related stuff
@@ -163,7 +165,6 @@ SemaphoreHandle_t xTwaiSemaphore;    // twai mutex
 
 const char *fp2_alerts0_str[] = {"OVS Lockout", "Primary Module Failure", "Secondary Module Failure", "Mains Voltage High", "Mains Voltage Low", "Temperature High", "Temperature Low", "Current Over Limit"};
 const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure", "Secondary Module Failure", "Fan 1 Speed Low", "Fan 2 Speed Low", "Sub-module 1 Failure", "Fan 3 Speed Low", "Internal Voltage Fault"};
-
 typedef struct {
     uint8_t serial[6];
     uint8_t id;
@@ -195,7 +196,6 @@ static uint32_t fp2_outlet_temp;
 static void displayTask(void *pvParameter);
 static void lvTickTimer(void *ignore);
 static void ledTask(void *ignore);
-static void networkTask(void *ignore);
 static void timeSyncTask(void *ignore);
 static void tempSensorTask(void *ignore);
 static void twaiTask(void *ignore);
@@ -226,9 +226,15 @@ void app_main(void) {
     appEventGroup = xEventGroupCreate();
 
     //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 4, NULL);
+    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 5, NULL);
 
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    //* init wifi manager, register callbacks
+    wifi_manager_start();
+    // register wifi callbacks
+    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_netConnected);
+    wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_netDisconnected);
 
     //* Create OLED display task
     xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 9, NULL);
@@ -237,16 +243,35 @@ void app_main(void) {
     //xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
 
     //* Create RGB LED update task
-    //xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 3, NULL);
-
-    //* create wifi initialization task
-    //xTaskCreate(&networkTask, "network", 1024 * 2, NULL, 5, NULL);
+    xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 3, NULL);
 
     //* Create SNTP management task
     //xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
 
     //* Create temp sensor polling task
-    //xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, 2, NULL);
+    xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, 2, NULL);
+}
+
+/****************************************************************
+ * * WiFi manager callbacks
+ * TODO: Maybe pick up SNTP from DHCP?
+ */
+void cb_netConnected(void *pvParameter) {
+    ip_event_got_ip_t *net_event = (ip_event_got_ip_t *)pvParameter;
+    xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
+
+    /* transform IP to human readable string */
+    char str_ip[16];
+    esp_ip4addr_ntoa(&net_event->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
+
+    ESP_LOGI(TAG, "wifi connected, yay! acquired IP address: %s", str_ip);
+}
+
+void cb_netDisconnected(void *pvParameter) {
+    wifi_event_sta_disconnected_t *net_event = (wifi_event_sta_disconnected_t *)pvParameter;
+    xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
+
+    ESP_LOGW(TAG, "wifi disconnected, boo! reason:%d", net_event->reason);
 }
 
 
@@ -292,7 +317,7 @@ void displayTask(void *pvParameter) {
     const esp_timer_create_args_t lvgl_timer_args = {
         .callback              = &lvTickTimer,
         .name                  = "lvglTick",
-        .dispatch_method       = ESP_TIMER_ISR,
+//         .dispatch_method       = ESP_TIMER_ISR, // doesn't work on IDF 4.3 :(
         .skip_unhandled_events = 1,
     };
     esp_timer_handle_t lvgl_timer;
@@ -532,10 +557,11 @@ void fp2LoginTask(void *pvParameter) {
     }
 
     // initialize task handler delay loop
-    TickType_t       xLastLoginTime = xTaskGetTickCount();
-    const TickType_t xTaskInterval  = pdMS_TO_TICKS(FP2_LOGIN_INTERVAL * 1000);
+    TickType_t       xLastLoginTime;
+    const TickType_t xTaskInterval = pdMS_TO_TICKS(FP2_LOGIN_INTERVAL * 1000);
 
     // send a login roughly every FP2_LOGIN_INTERVAL seconds
+    xLastLoginTime = xTaskGetTickCount();
     while (true) {
         // Try to take the semaphore and send a login packet
         if (pdTRUE == xSemaphoreTake(xTwaiSemaphore, portMAX_DELAY)) {
@@ -581,18 +607,18 @@ void ledTask(void *ignore) {
 
     // initialize task handler delay loop
     TickType_t       xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xTaskInterval = pdMS_TO_TICKS(10);
+    const TickType_t xTaskInterval = pdMS_TO_TICKS(1000 / LED_UPDATE_RATE_HZ);
 
     // this is a placeholder that just does a rainbow cycle until I have this actually set up
     while (true) {
         for (int i = 0; i < 360; i++) {
-            // wait for next interval
-            vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
             // build RGB value
             led_hsv2rgb(i, 100, 30, &red, &green, &blue);
-            ESP_ERROR_CHECK(rgb_led->set_pixel(rgb_led, 0, red, green, blue));
+            rgb_led->set_pixel(rgb_led, 0, red, green, blue);
             // Flush RGB value to LED
-            ESP_ERROR_CHECK(rgb_led->refresh(rgb_led, 100));
+            rgb_led->refresh(rgb_led, 100);
+            // wait for next interval
+            vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
         }
     }
     vTaskDelete(NULL);
@@ -644,39 +670,6 @@ void cb_timeSyncEvent(struct timeval *tv) {
 
 
 /****************************************************************
- * * WiFi Manager task; doesn't need to be separate, really, but means it doesn't block main
- * TODO: Maybe pick up SNTP from DHCP?
- */
-void networkTask(void *ignore) {
-    // start the wifi manager
-    wifi_manager_start();
-    // register wifi callbacks
-    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_netConnected);
-    wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_netDisconnected);
-    // done
-    vTaskDelete(NULL);
-}
-
-void cb_netConnected(void *pvParameter) {
-    ip_event_got_ip_t *net_event = (ip_event_got_ip_t *)pvParameter;
-    xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
-
-    /* transform IP to human readable string */
-    char str_ip[16];
-    esp_ip4addr_ntoa(&net_event->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
-
-    ESP_LOGI(TAG, "wifi connected, yay! acquired IP address: %s", str_ip);
-}
-
-void cb_netDisconnected(void *pvParameter) {
-    wifi_event_sta_disconnected_t *net_event = (wifi_event_sta_disconnected_t *)pvParameter;
-    xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
-
-    ESP_LOGW(TAG, "wifi disconnected, boo! reason:%d", net_event->reason);
-}
-
-
-/****************************************************************
  * * ESP Internal Temp Sensor task
  */
 void tempSensorTask(void *ignore) {
@@ -699,10 +692,11 @@ void tempSensorTask(void *ignore) {
     ESP_LOGI(TEMP_TASK_TAG, "current chip temp %.3f°C", esp_internal_temp);
 
     // initialize task handler delay loop
-    TickType_t       xLastWakeTime = xTaskGetTickCount();
+    TickType_t       xLastWakeTime;
     const TickType_t xTaskInterval = pdMS_TO_TICKS(TEMP_POLL_PERIOD * 1000);
 
     // update the temp sensor reading roughly every TEMP_POLL_PERIOD seconds
+    xLastWakeTime = xTaskGetTickCount();
     while (true) {
         vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
         temp_sensor_read_celsius(&esp_internal_temp);
@@ -715,19 +709,17 @@ void tempSensorTask(void *ignore) {
  */
 void consoleTask(void *ignore) {
     //* Initialize console
-    initialize_nvs();
     initialize_console();
     /* Register commands */
     esp_console_register_help_command();
     register_system_common();
     register_system_sleep();
-    register_nvs();
 
     /**
      * Prompt to be printed before each line.
      * This can be customized, made dynamic, etc.
      */
-    const char *prompt = LOG_COLOR(LOG_COLOR_PURPLE) CONFIG_IDF_TARGET "> " LOG_RESET_COLOR;
+    const char *prompt = LOG_COLOR(LOG_COLOR_PURPLE) "flatpack2s2> " LOG_RESET_COLOR;
 
     printf("\n"
            "Welcome to flatpack2s2.\n"
@@ -739,14 +731,8 @@ void consoleTask(void *ignore) {
     int probe_status = linenoiseProbe();
     if (probe_status) { // zero indicates success
         printf("\n"
-               "Your terminal application does not support escape sequences.\n"
-               "Line editing and history features are disabled.\n"
-               "On Windows, try using Putty instead.\n");
+               "linenoise probe failed, enabling dumb mode...\n");
         linenoiseSetDumbMode(1);
-#if CONFIG_LOG_COLORS
-        // Since the terminal doesn't support escape sequences, don't use color codes in the prompt.
-        prompt = CONFIG_IDF_TARGET "> ";
-#endif //CONFIG_LOG_COLORS
     }
 
     // tell everybody we're on our way
@@ -779,15 +765,6 @@ void consoleTask(void *ignore) {
     }
 }
 
-static void initialize_nvs(void) {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(err);
-}
-
 static void initialize_console(void) {
     /* Disable buffering on stdin */
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -805,9 +782,7 @@ static void initialize_console(void) {
     esp_console_config_t console_config = {
         .max_cmdline_args   = 8,
         .max_cmdline_length = 256,
-#if CONFIG_LOG_COLORS
         .hint_color = atoi(LOG_COLOR_CYAN)
-#endif
     };
     ESP_ERROR_CHECK(esp_console_init(&console_config));
 
