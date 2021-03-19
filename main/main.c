@@ -231,7 +231,7 @@ void app_main(void) {
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
-    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 8, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 9, NULL);
 
     //* Create TWAI setup task
     //xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
@@ -305,13 +305,12 @@ void displayTask(void *pvParameter) {
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
 
-#ifdef LV_USE_DELAYUNTIL
     // initialize task handler delay loop
-    TickType_t       xLastWakeTime;
-    const TickType_t xTaskInterval = pdMS_TO_TICKS(LV_TASK_PERIOD_MS);
+    TickType_t       xLvglWakeTime;
+    const TickType_t xLvglTaskInterval = pdMS_TO_TICKS(LV_TASK_PERIOD_MS);
 
     // run task handler delay loop forever and ever
-    xLastWakeTime = xTaskGetTickCount();
+    xLvglWakeTime = xTaskGetTickCount();
     while (true) {
         // Try to take the semaphore, call lvgl task handler on success
         if (pdTRUE == xSemaphoreTake(xDisplaySemaphore, portMAX_DELAY)) {
@@ -319,19 +318,8 @@ void displayTask(void *pvParameter) {
             xSemaphoreGive(xDisplaySemaphore);
         }
         // wait for next interval
-        vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
+        vTaskDelayUntil(&xLvglWakeTime, xLvglTaskInterval);
     }
-#else
-    // run task handler delay loop forever and ever
-    while (true) {
-        // Try to take the semaphore, call lvgl task handler on success
-        if (pdTRUE == xSemaphoreTake(xDisplaySemaphore, portMAX_DELAY)) {
-            lv_task_handler();
-            xSemaphoreGive(xDisplaySemaphore);
-        }
-        vTaskDelay(LV_TASK_PERIOD_MS);
-    }
-#endif // LV_USE_DELAYUNTIL
 
     /* A task should NEVER return */
     free(buf1);
@@ -383,8 +371,9 @@ static void lvAppCreate(void) {
 
     /* create spinny loading icon thing */
     lv_obj_t *load_spinner = lv_spinner_create(scr, NULL);
-    lv_obj_set_size(load_spinner, 80, 80);
-    lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_size(load_spinner, 90, 90);
+    lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -5);
+    lv_spinner_set_type(load_spinner, LV_SPINNER_TYPE_CONSTANT_ARC);
 
     //lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -8);
     lv_obj_set_style_local_line_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
