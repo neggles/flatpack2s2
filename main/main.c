@@ -208,8 +208,8 @@ static void initialize_nvs(void);
 static void initialize_console(void);
 
 // Callbacks
-static void cb_netConnected(void *pvParameter);
-static void cb_netDisconnected(void *pvParameter);
+static void cb_netConnected(void *ignore);
+static void cb_netDisconnected(void *ignore);
 static void cb_timeSyncEvent(struct timeval *tv);
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 
@@ -226,7 +226,7 @@ void app_main(void) {
     appEventGroup = xEventGroupCreate();
 
     //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 5, NULL);
+    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 7, NULL);
 
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
@@ -237,7 +237,7 @@ void app_main(void) {
     wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_netDisconnected);
 
     //* Create OLED display task
-    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 9, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
 
     //* Create TWAI setup task
     //xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
@@ -256,22 +256,12 @@ void app_main(void) {
  * * WiFi manager callbacks
  * TODO: Maybe pick up SNTP from DHCP?
  */
-void cb_netConnected(void *pvParameter) {
-    ip_event_got_ip_t *net_event = (ip_event_got_ip_t *)pvParameter;
+void cb_netConnected(void *ignore) {
     xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
-
-    /* transform IP to human readable string */
-    char str_ip[16];
-    esp_ip4addr_ntoa(&net_event->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
-
-    ESP_LOGI(TAG, "wifi connected, yay! acquired IP address: %s", str_ip);
 }
 
-void cb_netDisconnected(void *pvParameter) {
-    wifi_event_sta_disconnected_t *net_event = (wifi_event_sta_disconnected_t *)pvParameter;
+void cb_netDisconnected(void *ignore) {
     xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
-
-    ESP_LOGW(TAG, "wifi disconnected, boo! reason:%d", net_event->reason);
 }
 
 
