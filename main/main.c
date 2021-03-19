@@ -73,7 +73,7 @@
  * * Log tag strings
  */
 static const char *TAG               = "flatpack2s2";
-static const char *APP_CREATE_TAG    = "lvAppCreate";
+static const char *LVGL_TAG          = "lvgl";
 static const char *DISP_TASK_TAG     = "displayTask";
 static const char *LED_TASK_TAG      = "ledTask";
 static const char *TIMESYNC_TASK_TAG = "timeSyncTask";
@@ -103,9 +103,9 @@ static const char *FP2_ALERT_TAG     = "fp2AlertMessage";
 #define TEMP_POLL_PERIOD 10
 
 // lvgl task handler interval and tick update interval
-#define LV_TICK_PERIOD_MS 1
-#define LV_TASK_PERIOD_MS 5
-
+#define LV_TICK_PERIOD_MS 5
+#define LV_TASK_PERIOD_MS 20
+#define LV_USE_DELAYUNTIL 1
 
 // * Pin definitions
 static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
@@ -226,18 +226,18 @@ void app_main(void) {
     appEventGroup = xEventGroupCreate();
 
     //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 8, NULL);
+    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 4, NULL);
 
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 6, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 8, NULL);
 
     //* Create TWAI setup task
     //xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
 
     //* Create RGB LED update task
-    xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 3, NULL);
+    //xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 3, NULL);
 
     //* create wifi initialization task
     //xTaskCreate(&networkTask, "network", 1024 * 2, NULL, 5, NULL);
@@ -291,12 +291,13 @@ void displayTask(void *pvParameter) {
     /* Create and start a periodic timer interrupt to call lv_tick_inc from lvTickTimer() */
     const esp_timer_create_args_t lvgl_timer_args = {
         .callback              = &lvTickTimer,
-        .name                  = "lvgl_tick_timer",
+        .name                  = "lvglTick",
+        .dispatch_method       = ESP_TIMER_ISR,
         .skip_unhandled_events = 1,
     };
     esp_timer_handle_t lvgl_timer;
     ESP_ERROR_CHECK(esp_timer_create(&lvgl_timer_args, &lvgl_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_timer, (LV_TICK_PERIOD_MS * 1000)));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_timer, LV_TICK_PERIOD_MS * 1000));
 
     // set up initial screen state
     lvAppCreate();
@@ -304,11 +305,13 @@ void displayTask(void *pvParameter) {
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
 
+#ifdef LV_USE_DELAYUNTIL
     // initialize task handler delay loop
-    TickType_t       xLastWakeTime = xTaskGetTickCount();
+    TickType_t       xLastWakeTime;
     const TickType_t xTaskInterval = pdMS_TO_TICKS(LV_TASK_PERIOD_MS);
 
     // run task handler delay loop forever and ever
+    xLastWakeTime = xTaskGetTickCount();
     while (true) {
         // Try to take the semaphore, call lvgl task handler on success
         if (pdTRUE == xSemaphoreTake(xDisplaySemaphore, portMAX_DELAY)) {
@@ -318,6 +321,17 @@ void displayTask(void *pvParameter) {
         // wait for next interval
         vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
     }
+#else
+    // run task handler delay loop forever and ever
+    while (true) {
+        // Try to take the semaphore, call lvgl task handler on success
+        if (pdTRUE == xSemaphoreTake(xDisplaySemaphore, portMAX_DELAY)) {
+            lv_task_handler();
+            xSemaphoreGive(xDisplaySemaphore);
+        }
+        vTaskDelay(LV_TASK_PERIOD_MS);
+    }
+#endif // LV_USE_DELAYUNTIL
 
     /* A task should NEVER return */
     free(buf1);
@@ -329,31 +343,32 @@ void lvTickTimer(void *ignore) {
     lv_tick_inc(LV_TICK_PERIOD_MS);
 }
 
+
 // lvgl log callback
 void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
     // use ESP_LOGx macros
     switch (level) {
         case LV_LOG_LEVEL_INFO:
-            ESP_LOGI(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            ESP_LOGI(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line);
             break;
         case LV_LOG_LEVEL_WARN:
-            ESP_LOGW(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            ESP_LOGW(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line);
             break;
         case LV_LOG_LEVEL_ERROR:
-            ESP_LOGE(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            ESP_LOGE(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line);
             break;
         case LV_LOG_LEVEL_TRACE:
-            ESP_LOGV(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            ESP_LOGV(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line);
             break;
         default:
-            ESP_LOGI(DISP_TASK_TAG, "lvgl %s:%d %s: %s", file, line, fn_name, dsc);
+            ESP_LOGI(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line);
             break;
     }
 }
 
 // setup initial display state
 static void lvAppCreate(void) {
-    ESP_LOGI(APP_CREATE_TAG, "setting up initial display state");
+    ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
     // get app data
     const esp_app_desc_t *app_info = esp_ota_get_app_description();
@@ -362,22 +377,25 @@ static void lvAppCreate(void) {
     lv_obj_t *scr = lv_disp_get_scr_act(NULL);
 
     /*Create a Label on the currently active screen*/
-    lv_obj_t *label1 = lv_label_create(scr, NULL);
+    lv_obj_t *app_name = lv_label_create(scr, NULL);
+    lv_label_set_text(app_name, "flatpack2s2");
+    lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
 
-    /*Modify the Label's text*/
-    lv_label_set_text(label1, "flatpack2s2");
+    /* create spinny loading icon thing */
+    lv_obj_t *load_spinner = lv_spinner_create(scr, NULL);
+    lv_obj_set_size(load_spinner, 80, 80);
+    lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, 0);
 
-    /*Create a Preloader object*/
-    lv_obj_t * preload = lv_spinner_create(lv_scr_act(), NULL);
-    lv_obj_set_size(preload, 32, 32);
-    lv_obj_align(preload, NULL, LV_ALIGN_CENTER, 0, -8);
+    //lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -8);
+    lv_obj_set_style_local_line_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
+    lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
+    lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
 
     /* Align the Label to the center
      * NULL means align on parent (which is the screen now)
      * 0, 0 at the end means an x, y offset after alignment*/
-    lv_obj_align(label1, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -2);
 
-    ESP_LOGI(APP_CREATE_TAG, "complete");
+    ESP_LOGI(DISP_TASK_TAG, "complete");
 }
 
 
@@ -720,7 +738,7 @@ void consoleTask(void *ignore) {
      * Prompt to be printed before each line.
      * This can be customized, made dynamic, etc.
      */
-    const char *prompt = LOG_COLOR_I CONFIG_IDF_TARGET "> " LOG_RESET_COLOR;
+    const char *prompt = LOG_COLOR(LOG_COLOR_PURPLE) CONFIG_IDF_TARGET "> " LOG_RESET_COLOR;
 
     printf("\n"
            "Welcome to flatpack2s2.\n"
@@ -728,16 +746,16 @@ void consoleTask(void *ignore) {
            "Use UP/DOWN arrows to navigate through command history.\n"
            "Press TAB when typing command name to auto-complete.\n");
 
-    /* Figure out if the terminal supports escape sequences */
+    // Figure out if the terminal supports escape sequences
     int probe_status = linenoiseProbe();
-    if (probe_status) { /* zero indicates success */
+    if (probe_status) { // zero indicates success
         printf("\n"
                "Your terminal application does not support escape sequences.\n"
                "Line editing and history features are disabled.\n"
                "On Windows, try using Putty instead.\n");
         linenoiseSetDumbMode(1);
 #if CONFIG_LOG_COLORS
-        /* Since the terminal doesn't support escape sequences, don't use color codes in the prompt. */
+        // Since the terminal doesn't support escape sequences, don't use color codes in the prompt.
         prompt = CONFIG_IDF_TARGET "> ";
 #endif //CONFIG_LOG_COLORS
     }
