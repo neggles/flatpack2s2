@@ -7,7 +7,7 @@ menu "flatpack2s2 Project Configuration"
             help
                 POSIX time zone string for system. I might implement a tz db later idk
 
-    endmenu #system
+    endmenu #System
 
     menu "TWAI"
         config TWAI_TX_GPIO
@@ -27,7 +27,8 @@ menu "flatpack2s2 Project Configuration"
             default 17
             help
                 Selects GPIO used for TWAI (CAN) bus transceiver enable. Connect to your CAN transciever.
-    endmenu
+
+    endmenu #TWAI
 
     menu "I2C"
 
@@ -35,14 +36,37 @@ menu "flatpack2s2 Project Configuration"
             int "Qwiic Connector SCL GPIO"
             default 1
             help
-                Selects GPIO used for SSD13xx I2C OLED SCL line
+                Selects GPIO used for Qwiic connector SCL line
 
         config I2C_QWIIC_SDA
             int "Qwiic Connector SDA GPIO"
             default 2
             help
-                Selects GPIO used for SSD13xx I2C OLED SDA line
-    endmenu
+                Selects GPIO used for Qwiic connector SDA line
+
+    endmenu #I2C
+
+    menu "flatpack2"
+
+        config FP2_VOUT_MIN
+            int "Flatpack2 PSU rated minimum voltage"
+            default 4350
+            help
+                Enter your power supply's rated minimum voltage, in centiVolts (Volts * 100)
+
+        config FP2_VOUT_MAX
+            int "Flatpack2 PSU rated maximum voltage"
+            default 5760
+            help
+                Enter your power supply's rated maximum voltage, in centiVolts (Volts * 100)
+
+        config FP2_IOUT_MAX
+            int "Flatpack2 PSU rated maximum current"
+            default 4170
+            help
+                Enter your power supply's rated maximum current, in deciAmps (Amps * 100)
+
+    endmenu #flatpack2
 
     menu "misc. GPIOs"
 
@@ -69,8 +93,10 @@ menu "flatpack2s2 Project Configuration"
             default 38
             help
                 Selects GPIO used for WS2812B RGB status LED
-    endmenu
-endmenu
+
+    endmenu #misc. GPIOs
+
+endmenu # flatpack2s2
 
 menu "LWIP"
     menu "SNTP"
