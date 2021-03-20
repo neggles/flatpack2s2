@@ -68,22 +68,22 @@
 #include "wifi_manager.h"
 
 // Extra project source files (helper functions etc.)
-#include "helper_funcs.h"
+#include "helpers.h"
 
 /**
  * * Log tag strings
  */
-static const char *TAG               = "flatpack2s2";
-static const char *LVGL_TAG          = "lvgl";
-static const char *DISP_TASK_TAG     = "displayTask";
-static const char *LED_TASK_TAG      = "ledTask";
-static const char *TIMESYNC_TASK_TAG = "timeSyncTask";
-static const char *CONSOLE_TASK_TAG  = "usbConsoleTask";
-static const char *TWAI_TASK_TAG     = "twaiTask";
-static const char *LOGIN_TASK_TAG    = "fp2LoginTask";
-static const char *TWAI_TX_TASK_TAG  = "twaiTxTask";
-static const char *TWAI_RX_TASK_TAG  = "twaiRxTask";
-static const char *FP2_ALERT_TAG     = "fp2AlertMessage";
+static const char *TAG                = "flatpack2s2";
+static const char *LVGL_TAG           = "lvgl";
+static const char *DISP_TASK_TAG      = "displayTask";
+static const char *LED_TASK_TAG       = "ledTask";
+static const char *TIMESYNC_TASK_TAG  = "timeSyncTask";
+static const char *CONSOLE_TASK_TAG   = "usbConsoleTask";
+static const char *TWAI_CTRL_TASK_TAG = "twaiCtrlTask";
+static const char *TWAI_TX_TASK_TAG   = "twaiTxTask";
+static const char *TWAI_RX_TASK_TAG   = "twaiRxTask";
+static const char *FP2_ALERT_TAG      = "fp2AlertMessage";
+static const char *FP2_LOGIN_TASK_TAG = "fp2LoginTask";
 
 
 /**
@@ -165,6 +165,7 @@ nvs_handle_t      nvsHandle;
 
 const char *fp2_alerts0_str[] = {"OVS Lockout", "Primary Module Failure", "Secondary Module Failure", "Mains Voltage High", "Mains Voltage Low", "Temperature High", "Temperature Low", "Current Over Limit"};
 const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure", "Secondary Module Failure", "Fan 1 Speed Low", "Fan 2 Speed Low", "Sub-module 1 Failure", "Fan 3 Speed Low", "Internal Voltage Fault"};
+
 typedef struct {
     uint8_t serial[6];
     uint8_t id;
@@ -230,12 +231,6 @@ void app_main(void) {
 
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    //* init wifi manager, register callbacks
-    wifi_manager_start();
-    // register wifi callbacks
-    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_netConnected);
-    wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_netDisconnected);
-
     //* Create OLED display task
     xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
 
@@ -250,18 +245,6 @@ void app_main(void) {
 
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, 2, NULL);
-}
-
-/****************************************************************
- * * WiFi manager callbacks
- * TODO: Maybe pick up SNTP from DHCP?
- */
-void cb_netConnected(void *ignore) {
-    xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
-}
-
-void cb_netDisconnected(void *ignore) {
-    xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
 }
 
 
@@ -305,9 +288,9 @@ void displayTask(void *pvParameter) {
 
     /* Create and start a periodic timer interrupt to call lv_tick_inc from lvTickTimer() */
     const esp_timer_create_args_t lvgl_timer_args = {
-        .callback              = &lvTickTimer,
-        .name                  = "lvglTick",
-//         .dispatch_method       = ESP_TIMER_ISR, // doesn't work on IDF 4.3 :(
+        .callback = &lvTickTimer,
+        .name     = "lvglTick",
+        //         .dispatch_method       = ESP_TIMER_ISR, // doesn't work on IDF 4.3 :(
         .skip_unhandled_events = 1,
     };
     esp_timer_handle_t lvgl_timer;
@@ -408,7 +391,7 @@ static void lvAppCreate(void) {
  * TODO: Literally all of this
  */
 void twaiTask(void *ignore) {
-    ESP_LOGI(TWAI_TASK_TAG, "initializing TWAI");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "initializing TWAI");
 
     // create mutex
     xTwaiSemaphore = xSemaphoreCreateMutex();
@@ -418,8 +401,8 @@ void twaiTask(void *ignore) {
     static const twai_general_config_t fp2_twai_g_config = TWAI_GENERAL_CONFIG_DEFAULT(CONFIG_TWAI_TX_GPIO, CONFIG_TWAI_RX_GPIO, TWAI_MODE_NORMAL);
     static const twai_timing_config_t  fp2_twai_t_config = TWAI_TIMING_CONFIG_125KBITS();
     static const twai_filter_config_t  fp2_twai_f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-    ESP_ERROR_CHECK(twai_driver_install(&fp2_twai_g_config, &fp2_twai_t_config, &fp2_twai_f_config));
-    ESP_LOGI(TWAI_TASK_TAG, "TWAI driver configured");
+    ESP_ERROR_CHECK_WITHOUT_ABORT(twai_driver_install(&fp2_twai_g_config, &fp2_twai_t_config, &fp2_twai_f_config));
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI driver configured");
 
     // Configure TWAI_EN GPIO
     static const gpio_config_t twai_en_conf = {
@@ -429,27 +412,27 @@ void twaiTask(void *ignore) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
     };
-    ESP_ERROR_CHECK(gpio_config(&twai_en_conf));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&twai_en_conf));
 
     // Enable transceiver and give it 1ms to wake up; it only wants 20us, but eh.
     gpio_set_level(GPIO_TWAI_EN, 0);
-    ESP_LOGI(TWAI_TASK_TAG, "TWAI bus transceiver enabled, starting driver");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI bus transceiver enabled, starting driver");
     vTaskDelay(pdMS_TO_TICKS(1));
 
     // Start driver
     esp_err_t err = twai_start();
     if (err != ESP_OK) {
-        ESP_LOGE(TWAI_TASK_TAG, "TWAI driver start failed! Giving up on this task.");
+        ESP_LOGE(TWAI_CTRL_TASK_TAG, "TWAI driver start failed! Giving up on this task.");
         vTaskDelete(NULL);
     };
-    ESP_LOGI(TWAI_TASK_TAG, "TWAI driver started");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI driver started");
     xEventGroupSetBits(appEventGroup, TWAI_RUN_BIT);
 
     // Initialize fp2 structure
     static flatpack2_t flatpack2;
 
     // wait for a login request and save the PSU ID
-    ESP_LOGI(TWAI_TASK_TAG, "Waiting for PSU login request.");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Waiting for PSU login request.");
     while (true) {
         twai_message_t rxBuf;
         ESP_ERROR_CHECK(twai_receive(&rxBuf, portMAX_DELAY));
@@ -463,7 +446,7 @@ void twaiTask(void *ignore) {
 
             char snbuf[24];
             snprintf(snbuf, sizeof(snbuf), "%d%d%d%d%d%d", fp2_serial[0], fp2_serial[1], fp2_serial[2], fp2_serial[3], fp2_serial[4], fp2_serial[5]);
-            ESP_LOGI(TWAI_TASK_TAG, "Received login request from SN %s with ID %2x", snbuf, (fp2_id >> 16));
+            ESP_LOGI(TWAI_CTRL_TASK_TAG, "Received login request from SN %s with ID %2x", snbuf, (fp2_id >> 16));
             xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
             break;
         }
@@ -532,7 +515,7 @@ void fp2LoginTask(void *pvParameter) {
     // assemble message ID; 0x05xx4400, where xx = (desired ID) * 4
     // shifting received ID 18 bits left puts it in the right spot and multiplies it by 4
     uint32_t login_cmd_id = (((uint32_t)flatpack2->id << 18) | FP2_MSG_LOGIN_REQ);
-    ESP_LOGI(LOGIN_TASK_TAG, "sending login to ID 0x%08x", login_cmd_id);
+    ESP_LOGI(FP2_LOGIN_TASK_TAG, "sending login to ID 0x%08x", login_cmd_id);
 
     // assemble login packet
     twai_message_t login_msg;
@@ -772,8 +755,7 @@ static void initialize_console(void) {
     esp_console_config_t console_config = {
         .max_cmdline_args   = 8,
         .max_cmdline_length = 256,
-        .hint_color = atoi(LOG_COLOR_CYAN)
-    };
+        .hint_color         = atoi(LOG_COLOR_CYAN)};
     ESP_ERROR_CHECK(esp_console_init(&console_config));
 
     /* Configure linenoise line completion library. */
