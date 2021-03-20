@@ -144,10 +144,12 @@ nvs_handle_t      nvsHandle;
 #define FP2_STATUS_MASK 0xffffff00
 
 // commands - TX to power supply
-#define FP2_CMD_LOGIN       0x05004800
-#define FP2_CMD_SET_DEFAULT 0x05009c00
-#define FP2_CMD_SET_OUTPUT  0x05004804
-#define FP2_CMD_GET_ALARM   0x0500b00c
+#define FP2_CMD_LOGIN     0x05004800
+#define FP2_CMD_SET_DEF   0x05009c00
+#define FP2_CMD_SET_OUT   0x05004800
+#define FP2_CMD_GET_ALARM 0x0500b00c
+#define FP2_WALKIN_5S     0x04
+#define FP2_WALKIN_60S    0x05
 
 // responses - RX from power supply
 #define FP2_MSG_STATUS    0x05004000
@@ -167,9 +169,9 @@ const char *fp2_alerts0_str[] = {"OVS Lockout", "Primary Module Failure", "Secon
 const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure", "Secondary Module Failure", "Fan 1 Speed Low", "Fan 2 Speed Low", "Sub-module 1 Failure", "Fan 3 Speed Low", "Internal Voltage Fault"};
 
 typedef struct {
-    uint8_t serial[6];
-    uint8_t id;
-    uint8_t can_id;
+    uint8_t  serial[6];
+    uint8_t  id;
+    uint32_t login_id;
 } flatpack2_t;
 
 /**
@@ -180,8 +182,6 @@ typedef struct {
 static float esp_internal_temp;
 
 // fp2 power supply status
-static uint8_t  fp2_id;
-static uint8_t  fp2_serial[6];
 static uint32_t fp2_input_volts;
 static float    fp2_output_volts;
 static float    fp2_output_amps;
@@ -197,7 +197,6 @@ static uint32_t fp2_outlet_temp;
 static void displayTask(void *pvParameter);
 static void lvTickTimer(void *ignore);
 static void ledTask(void *ignore);
-static void timeSyncTask(void *ignore);
 static void tempSensorTask(void *ignore);
 static void twaiTask(void *ignore);
 static void fp2LoginTask(void *ignore);
@@ -221,27 +220,23 @@ static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, co
  * TODO: Set GPIO pull-ups for buttons etc.
  */
 void app_main(void) {
-    printf("flatpack2s2 startup!\n");
+    ESP_LOGW("flatpack2s2 startup!");
 
     //* initialize the main app event group
     appEventGroup = xEventGroupCreate();
 
     //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 7, NULL);
-
-    xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+//   xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 5, NULL);
+//    xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
     xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
 
     //* Create TWAI setup task
-    //xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
+    xTaskCreate(&twaiTask, "twai", 1024 * 4, NULL, 6, NULL);
 
     //* Create RGB LED update task
     xTaskCreate(&ledTask, "rgb", 1024 * 2, NULL, 3, NULL);
-
-    //* Create SNTP management task
-    //xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
 
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, 2, NULL);
@@ -323,13 +318,10 @@ void displayTask(void *pvParameter) {
     free(buf1);
     vTaskDelete(NULL);
 }
-
 // lvgl tick timer callback
 void lvTickTimer(void *ignore) {
     lv_tick_inc(LV_TICK_PERIOD_MS);
 }
-
-
 // lvgl log callback
 void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
     // use ESP_LOGx macros
@@ -378,17 +370,13 @@ static void lvAppCreate(void) {
     lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
     lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
 
-    /* Align the Label to the center
-     * NULL means align on parent (which is the screen now)
-     * 0, 0 at the end means an x, y offset after alignment*/
 
-    ESP_LOGI(DISP_TASK_TAG, "complete");
 }
 
 
 /****************************************************************
  * * TWAI init and run task
- * TODO: Literally all of this
+ * TODO: most of this if we are honest
  */
 void twaiTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "initializing TWAI");
@@ -412,10 +400,9 @@ void twaiTask(void *ignore) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
     };
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&twai_en_conf));
-
+    ESP_ERROR_CHECK(gpio_config(&twai_en_conf));
     // Enable transceiver and give it 1ms to wake up; it only wants 20us, but eh.
-    gpio_set_level(GPIO_TWAI_EN, 0);
+    ESP_ERROR_CHECK(gpio_set_level(GPIO_TWAI_EN, 0));
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI bus transceiver enabled, starting driver");
     vTaskDelay(pdMS_TO_TICKS(1));
 
@@ -429,7 +416,7 @@ void twaiTask(void *ignore) {
     xEventGroupSetBits(appEventGroup, TWAI_RUN_BIT);
 
     // Initialize fp2 structure
-    static flatpack2_t flatpack2;
+    static flatpack2_t fp2;
 
     // wait for a login request and save the PSU ID
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Waiting for PSU login request.");
@@ -439,21 +426,26 @@ void twaiTask(void *ignore) {
         // check if login message, ignore if not
         if ((rxBuf.identifier & FP2_MSG_MASK) == FP2_MSG_LOGIN_REQ) {
             // extract current PSU ID and serial number
-            flatpack2.id = (uint8_t)((rxBuf.identifier >> 16) & 0xff);
+            fp2.id = (uint8_t)(rxBuf.identifier >> 16 & 0xff);
             for (int i = 0; i < 6; i++) {
-                fp2_serial[i] = rxBuf.data[i];
+                fp2.serial[i] = rxBuf.data[i];
             }
 
-            char snbuf[24];
-            snprintf(snbuf, sizeof(snbuf), "%d%d%d%d%d%d", fp2_serial[0], fp2_serial[1], fp2_serial[2], fp2_serial[3], fp2_serial[4], fp2_serial[5]);
-            ESP_LOGI(TWAI_CTRL_TASK_TAG, "Received login request from SN %s with ID %2x", snbuf, (fp2_id >> 16));
+            //* assemble login message ID; 0x05xx4400, where xx = (desired ID) * 4
+            //* shifting received ID 18 bits left puts it in the right spot and multiplies it by 4
+            fp2.login_id = (uint32_t)((fp2.id << 18) | FP2_MSG_LOGIN_REQ);
+
+            // print device found message
+            char logBuf[80];
+            snprintf(logBuf, sizeof(logBuf), "found flatpack2 S/N %d%d%d%d%d%d,ID 0x%02x, login_id 0x%08x", fp2.serial[0], fp2.serial[1], fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5], fp2.id, fp2.login_id);
+            ESP_LOGW(TWAI_CTRL_TASK_TAG, "%s", logBuf); // warning log level so it stands out
             xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
-            break;
         }
+        break;
     }
 
     // start login task loop
-    xTaskCreate(&fp2LoginTask, "fp2LoginTask", 1024 * 4, &flatpack2, 6, NULL);
+    xTaskCreate(&fp2LoginTask, "fp2LoginTask", 1024 * 4, &fp2, 4, NULL);
 
     // main task loop, brother
     while (true) {
@@ -461,8 +453,8 @@ void twaiTask(void *ignore) {
         if (twai_receive(&rxBuf, portMAX_DELAY) == ESP_OK) {
             uint32_t msg_id = (rxBuf.identifier & FP2_MSG_MASK);
             switch (msg_id) {
-                case 1:
-                    /* code */
+                case FP2_MSG_STATUS:
+
                     break;
 
                 default:
@@ -510,15 +502,11 @@ void fp2AlertMsgProcess(uint8_t alertBuf[]) {
  */
 void fp2LoginTask(void *pvParameter) {
     // get passed parameter
-    flatpack2_t *flatpack2 = (flatpack2_t *)pvParameter;
-
-    // assemble message ID; 0x05xx4400, where xx = (desired ID) * 4
-    // shifting received ID 18 bits left puts it in the right spot and multiplies it by 4
-    uint32_t login_cmd_id = (((uint32_t)flatpack2->id << 18) | FP2_MSG_LOGIN_REQ);
-    ESP_LOGI(FP2_LOGIN_TASK_TAG, "sending login to ID 0x%08x", login_cmd_id);
+    flatpack2_t *fp2 = (flatpack2_t *)pvParameter;
 
     // assemble login packet
     twai_message_t login_msg;
+    login_msg.identifier       = fp2->login_id;
     login_msg.extd             = 1;
     login_msg.rtr              = 0;
     login_msg.self             = 0;
@@ -526,7 +514,7 @@ void fp2LoginTask(void *pvParameter) {
     login_msg.data_length_code = 8;
 
     for (int i = 0; i < 6; ++i) {
-        login_msg.data[i] = flatpack2->serial[i];
+        login_msg.data[i] = fp2->serial[i];
     }
 
     // initialize task handler delay loop
@@ -538,6 +526,7 @@ void fp2LoginTask(void *pvParameter) {
     while (true) {
         // Try to take the semaphore and send a login packet
         if (pdTRUE == xSemaphoreTake(xTwaiSemaphore, portMAX_DELAY)) {
+            ESP_LOGI(FP2_LOGIN_TASK_TAG, "sending login to PSU 0x%02x at ID 0x%08x", fp2->id, fp2->login_id);
             twai_transmit(&login_msg, pdMS_TO_TICKS(FP2_LOGIN_INTERVAL / 2));
             xSemaphoreGive(xTwaiSemaphore);
         }
@@ -598,49 +587,6 @@ void ledTask(void *ignore) {
 }
 
 
-/****************************************************************
- * * SNTP time sync setup task
- * TODO: Maybe pick up SNTP from DHCP?
- */
-void timeSyncTask(void *ignore) {
-    ESP_LOGI(TIMESYNC_TASK_TAG, "sntp task starting");
-
-    //* Set time zone and SNTP operating parameters
-    setenv("TZ", POSIX_TZ, 1);
-    tzset();
-
-    // wait for wifi connected bit in event group
-    ESP_LOGI(TIMESYNC_TASK_TAG, "TZ set, waiting for wifi");
-    xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    // configure ant start SNTP
-    ESP_LOGI(TIMESYNC_TASK_TAG, "Starting sntp service");
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, CONFIG_SNTP_SERVER);
-    sntp_set_time_sync_notification_cb(cb_timeSyncEvent);
-    sntp_init();
-
-    ESP_LOGI(TIMESYNC_TASK_TAG, "Waiting for system time to be set...");
-    xEventGroupWaitBits(appEventGroup, TIMESYNC_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    ESP_LOGI(TIMESYNC_TASK_TAG, "System time set, exiting");
-    vTaskDelete(NULL);
-}
-
-// sntp event callback
-void cb_timeSyncEvent(struct timeval *tv) {
-    ESP_LOGI(TIMESYNC_TASK_TAG, "SNTP sync event notification");
-
-    if ((xEventGroupGetBits(appEventGroup) & BIT1) == 0) xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
-
-    char      strftime_sntp[64];
-    time_t    sntp     = (time_t)tv->tv_sec;
-    struct tm sntpinfo = {0};
-    localtime_r(&sntp, &sntpinfo);
-    strftime(strftime_sntp, sizeof(strftime_sntp), "%c", &sntpinfo);
-    ESP_LOGI(TIMESYNC_TASK_TAG, "received date/time: %s", strftime_sntp);
-}
-
 
 /****************************************************************
  * * ESP Internal Temp Sensor task
@@ -687,6 +633,7 @@ void consoleTask(void *ignore) {
     esp_console_register_help_command();
     register_system_common();
     register_system_sleep();
+    register_nvs();
 
     /**
      * Prompt to be printed before each line.
@@ -738,8 +685,18 @@ void consoleTask(void *ignore) {
     }
 }
 
+static void initialize_nvs(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK( nvs_flash_erase() );
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+}
+
 static void initialize_console(void) {
-    /* Disable buffering on stdin */
+    /* Disable buffering on stdin and stdout */
     setvbuf(stdin, NULL, _IONBF, 0);
 
     /* Minicom, screen, idf_monitor send CR when ENTER key is pressed */
