@@ -5,7 +5,7 @@
 // bitmasks to extract command / PSU address from msg ID field
 #define FP2_MSG_MASK    0xff00ffff
 #define FP2_ADDR_MASK   0x00ff0000
-#define FP2_LOGIN_MASK  0xffff0000
+#define FP2_LOGIN_MASK  0xff00ff00
 #define FP2_STATUS_MASK 0xffffff00
 
 // commands - TX to power supply
@@ -28,8 +28,8 @@
 #define FP2_STATUS_ALARM  0x0C
 #define FP2_STATUS_WALKIN 0x10
 
-// login repeat interval - 10 sec should be fine, but 5 sec is nicer
-#define FP2_LOGIN_INTERVAL 5
+// login repeat interval - 10 sec should be fine
+#define FP2_LOGIN_INTERVAL 10
 
 // byte defs in status
 #define FP2_BYTE_INTAKE_TEMP  0

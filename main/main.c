@@ -404,7 +404,7 @@ void twaiTask(void *ignore) {
         twai_message_t rxBuf;
         ESP_ERROR_CHECK_WITHOUT_ABORT(twai_receive(&rxBuf, pdMS_TO_TICKS(15 * 1000)));
         // check if login message, ignore if not
-        if (((rxBuf.identifier & FP2_LOGIN_MASK) == FP2_MSG_LOGIN_REQ) || ((rxBuf.identifier & FP2_MSG_MASK) == FP2_MSG_LOGIN_WALKIN)) {
+        if (((rxBuf.identifier & FP2_LOGIN_MASK) == FP2_MSG_LOGIN_REQ) || ((rxBuf.identifier & FP2_LOGIN_MASK) == FP2_MSG_LOGIN_WALKIN)) {
             // extract current PSU ID and serial number
             fp2.id = (uint8_t)(rxBuf.identifier >> 16 & 0xff);
             for (int i = 0; i < 6; i++) {
@@ -417,7 +417,7 @@ void twaiTask(void *ignore) {
 
             // print device found message
             char logBuf[80];
-            snprintf(logBuf, sizeof(logBuf), "found flatpack2 S/N %d%d%d%d%d%d,ID 0x%02x, login_id 0x%08x", fp2.serial[0], fp2.serial[1], fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5], fp2.id, fp2.login_id);
+            snprintf(logBuf, sizeof(logBuf), "found flatpack2 S/N %.2x%.2x%.2x%.2x%.2x%.2x,ID 0x%02x, login_id 0x%08x", fp2.serial[0], fp2.serial[1], fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5], fp2.id, fp2.login_id);
             ESP_LOGI(TWAI_RX_TASK_TAG, "%s", logBuf); // warning log level so it stands out
             xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
             break;
@@ -446,7 +446,7 @@ void twaiTask(void *ignore) {
                 fp2_in_volts     = ((rxBuf.data[FP2_BYTE_VIN_H] << 8) * 0.1 + rxBuf.data[FP2_BYTE_VIN_L]) * 0.1;
                 fp2_status       = msg_id & 0xff;
                 ESP_LOGI(TWAI_RX_TASK_TAG, "ID 0x%.2x vin %f vout %f iout %f pout %f", fp2.id, fp2_in_volts, fp2_out_volts, fp2_out_amps, fp2_out_watts);
-                ESP_LOGI(TWAI_RX_TASK_TAG, "ID 0x%.2x intemp %d extemp %d status %.2x", fp2.id, fp2_temp_intake, fp2_temp_exhaust, fp2_status);
+                ESP_LOGI(TWAI_RX_TASK_TAG, "ID 0x%.2x intemp %d°C extemp %d°C status 0x%.2x", fp2.id, fp2_temp_intake, fp2_temp_exhaust, fp2_status);
             } else {
                 char logBuf[80];
                 snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x", rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5], rxBuf.data[6], rxBuf.data[7]);
@@ -623,7 +623,7 @@ void tempSensorTask(void *ignore) {
     while (true) {
         vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
         temp_sensor_read_celsius(&esp_internal_temp);
-        ESP_LOGI(TEMP_TASK_TAG, "current chip temp %.3f°C", esp_internal_temp);
+        //ESP_LOGI(TEMP_TASK_TAG, "current chip temp %.3f°C", esp_internal_temp);
     }
     vTaskDelete(NULL);
 }
