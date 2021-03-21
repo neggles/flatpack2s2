@@ -22,13 +22,15 @@
 #include "freertos/task.h"
 
 // ESP-IDF components
-#include <esp_log.h>
-#include <esp_system.h>
+#include <esp_err.h>
 #include <esp_event.h>
 #include <esp_freertos_hooks.h>
+#include <esp_log.h>
 #include <esp_netif.h>
-#include <esp_wifi.h>
+#include <esp_ota_ops.h>
 #include <esp_sntp.h>
+#include <esp_system.h>
+#include <esp_wifi.h>
 
 // ESP-IDF drivers
 #include "driver/gpio.h"
@@ -36,38 +38,39 @@
 #include "driver/rmt.h"
 #include "driver/temp_sensor.h"
 #include "driver/twai.h"
-#include "nvs_flash.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 #include "soc/rtc.h"
 
-//! --------------------------- Project components ------------------------- */
+// * --------------------------- Project components ------------------------- */
 
 // Serial command console component
-#include "esp_console.h"
 #include "argtable3/argtable3.h"
-#include "esp_vfs_cdcacm.h"
-#include "linenoise/linenoise.h"
 #include "cmd_nvs.h"
 #include "cmd_system.h"
+#include "esp_console.h"
+#include "esp_vfs_cdcacm.h"
+#include "linenoise/linenoise.h"
 
 // RGB LED strip driver (using RMT peripheral)
 #include "led_strip.h"
 
 // lvgl graphics library
-#include "lvgl/lvgl.h"
+#include "lvgl.h"
 #include "lvgl_helpers.h"
 
 // Extra project source files (helper functions etc.)
 #include "helpers.h"
 // fp2 #defines go in here
-#include "flatpack2.h"
+#include "flatpack2s2.h"
 
-//! -------------------- Definitions and static variables ------------------ */
+
+// * -------------------- Definitions and static variables ------------------ */
 
 // TZ string for sntp
 #define POSIX_TZ CONFIG_POSIX_TZ
 
-// WS2812 RGB LED
+// RGB LED driver config
 #define RMT_LED_CHANNEL    RMT_CHANNEL_0
 #define LED_UPDATE_RATE_HZ 50
 
@@ -82,8 +85,13 @@
 #define LV_TICK_PERIOD_MS 5
 #define LV_TASK_PERIOD_MS 20
 
+// LVGL indev pin definitions
+static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
+static const int btn_enter = CONFIG_FP2S2_SW_S_GPIO;
+static const int btn_right = CONFIG_FP2S2_SW_R_GPIO;
+static const int btn_back  = GPIO_NUM_0;
 
-// * Log tag strings
+// Log tag strings
 static const char *TAG                = "flatpack2s2";
 static const char *LVGL_TAG           = "lvgl";
 static const char *DISP_TASK_TAG      = "display";
@@ -95,44 +103,8 @@ static const char *TWAI_RX_TASK_TAG   = "twaiRx";
 static const char *FP2_ALERT_TAG      = "fp2AlertMessage";
 static const char *FP2_LOGIN_TASK_TAG = "fp2LoginTask";
 
-// * Pin definitions
-static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
-static const int btn_enter = CONFIG_FP2S2_SW_S_GPIO;
-static const int btn_right = CONFIG_FP2S2_SW_R_GPIO;
-static const int btn_back  = GPIO_NUM_0;
-
-
-// * Event Group for general status flags
-static EventGroupHandle_t appEventGroup;
-// bit assignments
-static const int DISP_RUN_BIT       = BIT0;
-static const int TWAI_RUN_BIT       = BIT1;
-static const int ESP_TEMP_RUN_BIT   = BIT2;
-static const int LED_RUN_BIT        = BIT3;
-static const int CONSOLE_RUN_BIT    = BIT4;
-static const int WIFI_CONNECTED_BIT = BIT10;
-static const int TIMESYNC_RUN_BIT   = BIT11;
-static const int TIME_VALID_BIT     = BIT12;
-
-// * Event group for Flatpack2 status flags
-static EventGroupHandle_t fp2EventGroup;
-// bit assignments
-static const int FP2_FOUND_BIT    = BIT0;
-static const int FP2_LOGIN_BIT    = BIT4;
-
-
-// * Semaphores and mutexes
-static SemaphoreHandle_t xDisplaySemaphore; // lvgl2 mutex
-static SemaphoreHandle_t xTwaiSemaphore;    // twai mutex
-
-static QueueHandle_t twaiTxQueue;
-static QueueHandle_t twaiRxQueue;
-
-/**
- * * Flatpack2 related stuff
- * ! see also: src/flatpack2.h
- */
-
+// * Flatpack2-related Constants
+// ! see also: src/flatpack2.h
 static const uint32_t fp2_vout_min = CONFIG_FP2_VOUT_MIN;
 static const uint32_t fp2_vout_max = CONFIG_FP2_VOUT_MAX;
 static const uint32_t fp2_iout_max = CONFIG_FP2_IOUT_MAX;
@@ -144,26 +116,56 @@ const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure",    
                                  "Fan 3 Speed Low",        "Internal Voltage Fault"};
 
 
-/**
- * * Global variables
- * ! Reads and writes to globals are only atomic for 32-bit values !
- */
-// esp internal
+// * --------------- Eventgroup, queue, and semaphore handles --------------- */
+
+// General shared event group
+static EventGroupHandle_t appEventGroup;
+// bit assignments
+static const int DISP_RUN_BIT       = BIT0;
+static const int TWAI_RUN_BIT       = BIT1;
+static const int ESP_TEMP_RUN_BIT   = BIT2;
+static const int LED_RUN_BIT        = BIT3;
+static const int CONSOLE_RUN_BIT    = BIT4;
+static const int WIFI_CONNECTED_BIT = BIT20;
+static const int TIMESYNC_RUN_BIT   = BIT21;
+static const int TIME_VALID_BIT     = BIT22;
+
+// flatpack2 event group
+static EventGroupHandle_t fp2EventGroup;
+// bit assignments
+static const int FP2_FOUND_BIT         = BIT0;
+static const int FP2_LOGIN_BIT         = BIT1;
+static const int FP2_STATUS_CV_BIT     = BIT2;
+static const int FP2_STATUS_CC_BIT     = BIT3;
+static const int FP2_STATUS_WALKIN_BIT = BIT4;
+static const int FP2_LOGIN_REQUEST_BIT = BIT5;
+//
+SemaphoreHandle_t xFp2LoginSemaphore;
+SemaphoreHandle_t xTwaiMutex;
+
+// lvgl driver mutex
+SemaphoreHandle_t xLvglMutex; // lvgl2 mutex
+
+
+// * --------------------------- Global Variables --------------------------- */
+// ! Reads and writes to globals are only atomic for 32-bit values !
+
+// esp internal temperature
 static float esp_internal_temp;
 
 // fp2 power supply status
-static float    fp2_in_volts;
-static float    fp2_out_volts;
-static float    fp2_out_amps;
-static float    fp2_out_watts;
-static uint32_t fp2_temp_intake;
-static uint32_t fp2_temp_exhaust;
-static uint8_t  fp2_status;
+static flatpack2_t fp2;
+static float       fp2_in_volts;
+static float       fp2_out_volts;
+static float       fp2_out_amps;
+static float       fp2_out_watts;
+static uint32_t    fp2_temp_intake;
+static uint32_t    fp2_temp_exhaust;
+static uint8_t     fp2_status;
 
 
-/**
- * * Static prototypes
- */
+// * ---------------------- Static function prototypes ---------------------- */
+
 // Tasks
 static void displayTask(void *pvParameter);
 static void lvTickTimer(void *ignore);
@@ -184,11 +186,8 @@ static void cb_netDisconnected(void *ignore);
 static void cb_timeSyncEvent(struct timeval *tv);
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 
-/**
- * * LVGL objects
- */
-// static
 
+// * -------------------------- Tasks & Functions --------------------------- */
 
 /****************************************************************
  * * app_main function - run on startup
@@ -201,18 +200,20 @@ void app_main(void) {
     //* initialize the main app event group
     appEventGroup = xEventGroupCreate();
 
-    // * semaphore for twai
-    xTwaiSemaphore = xSemaphoreCreateMutex();
-    assert(xTwaiSemaphore != NULL);
 
     //* start the command-line console task and wait for init
-    // xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 5, NULL);
-    // xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    xTaskCreate(&consoleTask, "console", 1024 * 4, NULL, 5, NULL);
+    xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
-    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
+    xLvglMutex = xSemaphoreCreateMutex();
+    assert(xLvglMutex != NULL);
+    // xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
 
     //* Create TWAI setup task
+    fp2EventGroup = xEventGroupCreate();
+    xTwaiMutex    = xSemaphoreCreateMutex();
+    assert(xTwaiMutex != NULL);
     xTaskCreate(&twaiCtrlTask, "twai", 1024 * 4, NULL, 6, NULL);
 
     //* Create RGB LED update task
@@ -228,9 +229,6 @@ void app_main(void) {
  */
 static void displayTask(void *pvParameter) {
     ESP_LOGI(DISP_TASK_TAG, "display task begin");
-
-    xDisplaySemaphore = xSemaphoreCreateMutex();
-    assert(xDisplaySemaphore != NULL);
 
     lv_init();
     lvgl_driver_init();
@@ -285,9 +283,9 @@ static void displayTask(void *pvParameter) {
     xLvglWakeTime = xTaskGetTickCount();
     while (true) {
         // Try to take the semaphore, call lvgl task handler on success
-        if (pdTRUE == xSemaphoreTake(xDisplaySemaphore, portMAX_DELAY)) {
+        if (pdTRUE == xSemaphoreTake(xLvglMutex, portMAX_DELAY)) {
             lv_task_handler();
-            xSemaphoreGive(xDisplaySemaphore);
+            xSemaphoreGive(xLvglMutex);
         }
         // wait for next interval
         vTaskDelayUntil(&xLvglWakeTime, xLvglTaskInterval);
@@ -297,10 +295,12 @@ static void displayTask(void *pvParameter) {
     free(buf1);
     vTaskDelete(NULL);
 }
+
 // lvgl tick timer callback
 static void lvTickTimer(void *ignore) {
     lv_tick_inc(LV_TICK_PERIOD_MS);
 }
+
 // lvgl log callback
 void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
     // use ESP_LOGx macros
@@ -318,16 +318,15 @@ static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
     // get app data
-    static const esp_app_desc_t *app_info = esp_ota_get_app_description();
-    static const char *esp_project_name[] = app_info.project_name;
+    const esp_app_desc_t *app_info = esp_ota_get_app_description();
 
     /* Get the current screen */
-    lv_obj_t *scr_def = lv_disp_get_scr_act(NULL);
+    lv_obj_t *scr_def        = lv_disp_get_scr_act(NULL);
     lv_obj_t *scr_fp2_status = lv_obj_create(NULL, NULL);
 
     /*Create a Label on the currently active screen*/
     lv_obj_t *app_name = lv_label_create(scr_def, NULL);
-    lv_label_set_text(app_name, "flatpack2s2");
+    lv_label_set_text(app_name, app_info->project_name);
     lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
 
     /* create spinny loading icon thing */
@@ -350,10 +349,12 @@ static void lvAppCreate(void) {
 void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI initialization");
 
+    xFp2LoginSemaphore = xSemaphoreCreateMutex();
+
     // Configure TWAI_EN GPIO
     static const gpio_config_t twai_en_conf = {
         .pin_bit_mask = GPIO_TWAI_EN_SEL,
-        .mode         = GPIO_MODE_OUTPUT_OD,
+        .mode         = GPIO_MODE_OUTPUT,
         .intr_type    = GPIO_INTR_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
@@ -364,13 +365,14 @@ void twaiCtrlTask(void *ignore) {
     vTaskDelay(pdMS_TO_TICKS(2));
 
     // Initialize config structures and install driver
-    static const twai_general_config_t g_config          = TWAI_GENERAL_CONFIG_DEFAULT(TX_GPIO_NUM, RX_GPIO_NUM, TWAI_MODE_NO_ACK);
-    static const twai_timing_config_t  fp2_twai_t_config = TWAI_TIMING_CONFIG_125KBITS();
-    static const twai_filter_config_t  fp2_twai_f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+    static const twai_general_config_t fp2_twai_g_config =
+        TWAI_GENERAL_CONFIG_DEFAULT(CONFIG_TWAI_TX_GPIO, CONFIG_TWAI_RX_GPIO, TWAI_MODE_NO_ACK);
+    static const twai_timing_config_t fp2_twai_t_config = TWAI_TIMING_CONFIG_125KBITS();
+    static const twai_filter_config_t fp2_twai_f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
     ESP_ERROR_CHECK_WITHOUT_ABORT(twai_driver_install(&fp2_twai_g_config, &fp2_twai_t_config, &fp2_twai_f_config));
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Driver configured");
 
-    // Enable transceiver and give it 1ms to wake up; it only wants 20us, but eh.
+    // Enable transceiver and give it 2ms to wake up; it only wants 20us, but eh.
     gpio_set_level(GPIO_TWAI_EN, 0);
     vTaskDelay(pdMS_TO_TICKS(2));
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Transceiver enabled");
@@ -381,7 +383,7 @@ void twaiCtrlTask(void *ignore) {
         ESP_LOGE(TWAI_CTRL_TASK_TAG, "Driver failed to start! Terminating...");
         vTaskDelete(NULL);
     };
-    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Driver is running");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Driver started");
 
     // reconfigure TWAI alerts
     twai_reconfigure_alerts(TWAI_ALERT_ALL | TWAI_ALERT_AND_LOG, NULL);
@@ -389,22 +391,107 @@ void twaiCtrlTask(void *ignore) {
 
     xEventGroupSetBits(appEventGroup, TWAI_RUN_BIT);
 
+    // wait for a login request and save the PSU ID
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Waiting for PSU login request.");
+    while (true) {
+        twai_message_t rxBuf;
+        esp_err_t      twaiRxErr = twai_receive(&rxBuf, pdMS_TO_TICKS(30 * 1000));
+        if (twaiRxErr == ESP_OK) {
+            // check if login message, ignore if not
+            if ((rxBuf.identifier & FP2_MSG_MASK) == FP2_MSG_HELLO) {
+                // extract current PSU ID and serial number
+                fp2.id = (uint8_t)(rxBuf.identifier >> 16 & 0xff);
+                for (int i = 0; i < 6; i++) {
+                    fp2.serial[i] = rxBuf.data[i];
+                }
 
+                // assemble login message ID; 0x050048xx, where xx = (desired ID) * 4
+                // shifting received ID 18 bits left puts it in the right spot and multiplies it by 4
+                fp2.login_id = (uint32_t)((fp2.id << 2) | FP2_CMD_LOGIN);
+
+                // print device found message
+                char logBuf[80];
+                snprintf(logBuf, sizeof(logBuf), "found flatpack2! S/N %.2x%.2x%.2x%.2x%.2x%.2x, ID 0x%02x, login_id 0x%08x",
+                         fp2.serial[0], fp2.serial[1], fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5], fp2.id,
+                         fp2.login_id);
+                ESP_LOGI(TWAI_CTRL_TASK_TAG, "%s", logBuf); // warning log level so it stands out
+                xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
+                break;
+            } else {
+                char logBuf[80];
+                snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x",
+                         rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5],
+                         rxBuf.data[6], rxBuf.data[7]);
+                ESP_LOGI(TWAI_CTRL_TASK_TAG, "%s", logBuf);
+            }
+        } else {
+            const char *rx_err_string = esp_err_to_name(twaiRxErr);
+            ESP_LOGW(TWAI_CTRL_TASK_TAG, "packet RX error: %s", rx_err_string);
+        }
+    }
+
+    xTaskCreate(&fp2LoginTask, "fp2LoginTask", 1024 * 4, &fp2, 4, NULL);
+
+    while (true) {
+        twai_message_t rxBuf;
+        esp_err_t      twaiRxErr = twai_receive(&rxBuf, pdMS_TO_TICKS(30 * 1000));
+        if (twaiRxErr == ESP_OK) {
+            uint32_t msg_id = (rxBuf.identifier & FP2_MSG_MASK);
+            if ((msg_id & FP2_STATUS_MASK) == FP2_MSG_STATUS) {
+                // status message get
+                fp2_temp_intake  = rxBuf.data[FP2_BYTE_INTAKE_TEMP];
+                fp2_temp_exhaust = rxBuf.data[FP2_BYTE_EXHAUST_TEMP];
+                fp2_out_amps     = ((rxBuf.data[FP2_BYTE_IOUT_H] << 8) + rxBuf.data[FP2_BYTE_IOUT_L]) * 0.01;
+                fp2_out_volts    = ((rxBuf.data[FP2_BYTE_VOUT_H] << 8) + rxBuf.data[FP2_BYTE_VOUT_L]) * 0.01;
+                fp2_out_watts    = fp2_out_amps * fp2_out_volts;
+                fp2_in_volts     = ((rxBuf.data[FP2_BYTE_VIN_H] << 8) + rxBuf.data[FP2_BYTE_VIN_L]);
+                fp2_status       = msg_id & 0xff;
+                ESP_LOGI(TWAI_CTRL_TASK_TAG, "ID 0x%.2x status: VIn %3.fV, VOut %2.2fV, IOut %2.2fA, POut %4.2fW", fp2.id,
+                         fp2_in_volts, fp2_out_volts, fp2_out_amps, fp2_out_watts);
+                ESP_LOGI(TWAI_CTRL_TASK_TAG, "        Intake %d°C, Exhaust %d°C, Status 0x%.2x", fp2_temp_intake, fp2_temp_exhaust,
+                         fp2_status);
+            } else {
+                char logBuf[80];
+                snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x",
+                         rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5],
+                         rxBuf.data[6], rxBuf.data[7]);
+                ESP_LOGV(TWAI_CTRL_TASK_TAG, "%s", logBuf);
+            }
+        } else {
+            const char *rx_err_string = esp_err_to_name(twaiRxErr);
+            ESP_LOGW(TWAI_CTRL_TASK_TAG, "packet RX error: %s", rx_err_string);
+        }
+    }
+
+    // should never execute
+    xEventGroupClearBits(appEventGroup, TWAI_RUN_BIT);
     vTaskDelete(NULL);
 }
 
 static void twaiTxTask(void *arg) {
-
 
     vTaskDelete(NULL);
 }
 
 static void twaiRxTask(void *arg) {
 
+    while (true) {
+        twai_message_t rxBuf;
+        esp_err_t      twaiRxErr = twai_receive(&rxBuf, pdMS_TO_TICKS(30 * 1000));
+        if (twaiRxErr == ESP_OK) {
+            char logBuf[80];
+            snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x",
+                     rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5],
+                     rxBuf.data[6], rxBuf.data[7]);
+            ESP_LOGI(TWAI_RX_TASK_TAG, "%s", logBuf);
+        } else {
+            const char *rx_err_string = esp_err_to_name(twaiRxErr);
+            ESP_LOGW(TWAI_RX_TASK_TAG, "packet RX error: %s", rx_err_string);
+        }
+    }
 
     vTaskDelete(NULL);
 }
-
 
 // convert FP2 alert bits to strings
 static void fp2AlertMsgProcess(uint8_t alertBuf[]) {
@@ -436,6 +523,7 @@ static void fp2AlertMsgProcess(uint8_t alertBuf[]) {
     }
 }
 
+
 /****************************************************************
  * * flatpack2 login loop task
  * TODO: make sure this like, works
@@ -463,19 +551,24 @@ void fp2LoginTask(void *pvParameter) {
 
     // send a login roughly every FP2_LOGIN_INTERVAL seconds
     xLastLoginTime = xTaskGetTickCount();
+
     while (true) {
         // Try to take the semaphore and send a login packet
-        if (pdTRUE == xSemaphoreTake(xTwaiSemaphore, portMAX_DELAY)) {
+        if (pdTRUE == xSemaphoreTake(xFp2LoginSemaphore, portMAX_DELAY)) {
             ESP_LOGI(FP2_LOGIN_TASK_TAG, "sending login to PSU 0x%02x at ID 0x%08x", fp2->id, fp2->login_id);
             twai_transmit(&login_msg, pdMS_TO_TICKS(FP2_LOGIN_INTERVAL / 2));
-            xSemaphoreGive(xTwaiSemaphore);
+            xSemaphoreGive(xFp2LoginSemaphore);
+            // wait for next interval
+            vTaskDelayUntil(&xLastLoginTime, xTaskInterval);
         }
-        // wait for next interval
-        vTaskDelayUntil(&xLastLoginTime, xTaskInterval);
     }
+
+    // should never execute
+    xEventGroupClearBits(fp2EventGroup, FP2_LOGIN_BIT);
+    vTaskDelete(NULL);
 }
 
-/**
+/****************************************************************
  * * RGB LED control task
  * TODO: Make this receive color set requests instead of just doing a rainbow fade
  */
@@ -536,8 +629,6 @@ void tempSensorTask(void *ignore) {
 
     // configure sensor
     temp_sensor_config_t temp_sensor = TSENS_CONFIG_DEFAULT();
-    temp_sensor_get_config(&temp_sensor);
-    temp_sensor.dac_offset = TSENS_DAC_DEFAULT; // DEFAULT: range:-10℃ ~  80℃, error < 1℃.
     temp_sensor_set_config(temp_sensor);
 
     // start sensor
@@ -560,8 +651,11 @@ void tempSensorTask(void *ignore) {
         temp_sensor_read_celsius(&esp_internal_temp);
         // ESP_LOGI(TEMP_TASK_TAG, "current chip temp %.3f°C", esp_internal_temp);
     }
+
+    xEventGroupClearBits(appEventGroup, ESP_TEMP_RUN_BIT);
     vTaskDelete(NULL);
 }
+
 
 /****************************************************************
  * * Command line console task

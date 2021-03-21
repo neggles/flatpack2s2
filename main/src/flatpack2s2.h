@@ -17,10 +17,10 @@
 #define FP2_WALKIN_60S    0x05
 
 // responses - RX from power supply
-#define FP2_MSG_STATUS       0x05004000
-#define FP2_MSG_LOGIN_REQ    0x05000000
-#define FP2_MSG_LOGIN_WALKIN 0x05004400
-#define FP2_MSG_ALARMS       0x0500BFFC
+#define FP2_MSG_STATUS    0x05004000
+#define FP2_MSG_LOGIN_REQ 0x05000000
+#define FP2_MSG_HELLO    0x05004400
+#define FP2_MSG_ALARMS    0x0500BFFC
 
 // status codes (last byte of ID in MSG_STATUS)
 #define FP2_STATUS_OK     0x04
