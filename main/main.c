@@ -75,8 +75,10 @@
 #define LED_UPDATE_RATE_HZ 50
 
 // TWAI transcever (MAX3051) enable pin, active-low
-#define GPIO_TWAI_EN     CONFIG_TWAI_EN_GPIO
-#define GPIO_TWAI_EN_SEL (1ULL << GPIO_TWAI_EN)
+#define TWAI_EN_GPIO        CONFIG_TWAI_EN_GPIO
+#define TWAI_EN_GPIO_SEL    (1ULL << TWAI_EN_GPIO)
+#define TWAI_RX_TIMEOUT_SEC 30
+#define TWAI_RX_LOG_ALL     1
 
 // interval for internal temp sensor measurements
 #define ESP_TEMP_POLL_SEC 10
@@ -100,6 +102,7 @@ static const char *CONSOLE_TASK_TAG   = "usbConsole";
 static const char *TWAI_CTRL_TASK_TAG = "twaiCtrl";
 static const char *TWAI_TX_TASK_TAG   = "twaiTx";
 static const char *TWAI_RX_TASK_TAG   = "twaiRx";
+static const char *TWAI_RX_LOG_TAG    = "twaiRxLog";
 static const char *FP2_ALERT_TAG      = "fp2AlertMessage";
 static const char *FP2_LOGIN_TASK_TAG = "fp2LoginTask";
 
@@ -140,7 +143,7 @@ static const int FP2_STATUS_CC_BIT     = BIT3;
 static const int FP2_STATUS_WALKIN_BIT = BIT4;
 static const int FP2_LOGIN_REQUEST_BIT = BIT5;
 //
-SemaphoreHandle_t xFp2LoginSemaphore;
+SemaphoreHandle_t fp2LoginReqSem;
 SemaphoreHandle_t xTwaiMutex;
 
 // lvgl driver mutex
@@ -166,19 +169,25 @@ static uint8_t     fp2_status;
 
 // * ---------------------- Static function prototypes ---------------------- */
 
-// Tasks
+//  Persistent tasks
 static void displayTask(void *pvParameter);
 static void lvTickTimer(void *ignore);
 static void ledTask(void *ignore);
 static void tempSensorTask(void *ignore);
 static void twaiCtrlTask(void *ignore);
-static void fp2LoginTask(void *ignore);
 static void consoleTask(void *ignore);
 
+// Non-persistent tasks
+static void fp2LoginTask(void *ignore);
+static void twaiRxTask(void *arg);
+static void twaiTxTask(void *arg);
+
 // Functions
-static void lvAppCreate(void);
-static void initialize_nvs(void);
-static void initialize_console(void);
+static void      lvAppCreate(void);
+static void      initialize_nvs(void);
+static void      initialize_console(void);
+static void      logTwaiRxMsg(twai_message_t *rxMsg);
+static esp_err_t saveFp2Details(twai_message_t *rxMsg);
 
 // Callbacks
 static void cb_netConnected(void *ignore);
@@ -349,11 +358,12 @@ static void lvAppCreate(void) {
 void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI initialization");
 
-    xFp2LoginSemaphore = xSemaphoreCreateMutex();
+    fp2LoginReqSem = xSemaphoreCreateBinary();
+
 
     // Configure TWAI_EN GPIO
     static const gpio_config_t twai_en_conf = {
-        .pin_bit_mask = GPIO_TWAI_EN_SEL,
+        .pin_bit_mask = TWAI_EN_GPIO_SEL,
         .mode         = GPIO_MODE_OUTPUT,
         .intr_type    = GPIO_INTR_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -361,7 +371,7 @@ void twaiCtrlTask(void *ignore) {
     };
     ESP_ERROR_CHECK(gpio_config(&twai_en_conf));
     // disable the driver to reset in case this is a warmboot, give it 2ms to cool off as per datasheet
-    gpio_set_level(GPIO_TWAI_EN, 1);
+    gpio_set_level(TWAI_EN_GPIO, 1);
     vTaskDelay(pdMS_TO_TICKS(2));
 
     // Initialize config structures and install driver
@@ -373,7 +383,7 @@ void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Driver configured");
 
     // Enable transceiver and give it 2ms to wake up; it only wants 20us, but eh.
-    gpio_set_level(GPIO_TWAI_EN, 0);
+    gpio_set_level(TWAI_EN_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(2));
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Transceiver enabled");
 
@@ -390,77 +400,24 @@ void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Alert configuration set");
 
     xEventGroupSetBits(appEventGroup, TWAI_RUN_BIT);
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Initialization complete");
 
-    // wait for a login request and save the PSU ID
-    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Waiting for PSU login request.");
+    // create RX task
+    TaskHandle_t rxTaskHandle;
+    xTaskCreate(&twaiRxTask, "twaiRxTask", 1024 * 4, NULL, 4, &rxTaskHandle);
+
+    // create login task
+    TaskHandle_t loginTaskHandle;
+    xTaskCreate(&fp2LoginTask, "fp2LoginTask", 1024 * 4, &fp2, 4, &loginTaskHandle);
+
+    // create TX task
+    // TaskHandle_t txTaskHandle;
+    // txTaskHandle = xTaskCreate(&twaiTxTask, "twaiTxTask", 1024 * 4, &fp2, 4, NULL);
+
+    // handle alerts
+    // TODO: handle alerts
     while (true) {
-        twai_message_t rxBuf;
-        esp_err_t      twaiRxErr = twai_receive(&rxBuf, pdMS_TO_TICKS(30 * 1000));
-        if (twaiRxErr == ESP_OK) {
-            // check if login message, ignore if not
-            if ((rxBuf.identifier & FP2_MSG_MASK) == FP2_MSG_HELLO) {
-                // extract current PSU ID and serial number
-                fp2.id = (uint8_t)(rxBuf.identifier >> 16 & 0xff);
-                for (int i = 0; i < 6; i++) {
-                    fp2.serial[i] = rxBuf.data[i];
-                }
-
-                // assemble login message ID; 0x050048xx, where xx = (desired ID) * 4
-                // shifting received ID 18 bits left puts it in the right spot and multiplies it by 4
-                fp2.login_id = (uint32_t)((fp2.id << 2) | FP2_CMD_LOGIN);
-
-                // print device found message
-                char logBuf[80];
-                snprintf(logBuf, sizeof(logBuf), "found flatpack2! S/N %.2x%.2x%.2x%.2x%.2x%.2x, ID 0x%02x, login_id 0x%08x",
-                         fp2.serial[0], fp2.serial[1], fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5], fp2.id,
-                         fp2.login_id);
-                ESP_LOGI(TWAI_CTRL_TASK_TAG, "%s", logBuf); // warning log level so it stands out
-                xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
-                break;
-            } else {
-                char logBuf[80];
-                snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x",
-                         rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5],
-                         rxBuf.data[6], rxBuf.data[7]);
-                ESP_LOGI(TWAI_CTRL_TASK_TAG, "%s", logBuf);
-            }
-        } else {
-            const char *rx_err_string = esp_err_to_name(twaiRxErr);
-            ESP_LOGW(TWAI_CTRL_TASK_TAG, "packet RX error: %s", rx_err_string);
-        }
-    }
-
-    xTaskCreate(&fp2LoginTask, "fp2LoginTask", 1024 * 4, &fp2, 4, NULL);
-
-    while (true) {
-        twai_message_t rxBuf;
-        esp_err_t      twaiRxErr = twai_receive(&rxBuf, pdMS_TO_TICKS(30 * 1000));
-        if (twaiRxErr == ESP_OK) {
-            uint32_t msg_id = (rxBuf.identifier & FP2_MSG_MASK);
-            if ((msg_id & FP2_STATUS_MASK) == FP2_MSG_STATUS) {
-                // status message get
-                fp2_temp_intake  = rxBuf.data[FP2_BYTE_INTAKE_TEMP];
-                fp2_temp_exhaust = rxBuf.data[FP2_BYTE_EXHAUST_TEMP];
-                fp2_out_amps     = ((rxBuf.data[FP2_BYTE_IOUT_H] << 8) + rxBuf.data[FP2_BYTE_IOUT_L]) * 0.01;
-                fp2_out_volts    = ((rxBuf.data[FP2_BYTE_VOUT_H] << 8) + rxBuf.data[FP2_BYTE_VOUT_L]) * 0.01;
-                fp2_out_watts    = fp2_out_amps * fp2_out_volts;
-                fp2_in_volts     = ((rxBuf.data[FP2_BYTE_VIN_H] << 8) + rxBuf.data[FP2_BYTE_VIN_L]);
-                fp2_status       = msg_id & 0xff;
-                ESP_LOGI(TWAI_CTRL_TASK_TAG, "ID 0x%.2x status: VIn %3.fV, VOut %2.2fV, IOut %2.2fA, POut %4.2fW", fp2.id,
-                         fp2_in_volts, fp2_out_volts, fp2_out_amps, fp2_out_watts);
-                ESP_LOGI(TWAI_CTRL_TASK_TAG, "        Intake %d°C, Exhaust %d°C, Status 0x%.2x", fp2_temp_intake, fp2_temp_exhaust,
-                         fp2_status);
-            } else {
-                char logBuf[80];
-                snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x",
-                         rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5],
-                         rxBuf.data[6], rxBuf.data[7]);
-                ESP_LOGV(TWAI_CTRL_TASK_TAG, "%s", logBuf);
-            }
-        } else {
-            const char *rx_err_string = esp_err_to_name(twaiRxErr);
-            ESP_LOGW(TWAI_CTRL_TASK_TAG, "packet RX error: %s", rx_err_string);
-        }
+        vTaskDelay(portMAX_DELAY);
     }
 
     // should never execute
@@ -468,43 +425,79 @@ void twaiCtrlTask(void *ignore) {
     vTaskDelete(NULL);
 }
 
-static void twaiTxTask(void *arg) {
+void twaiTxTask(void *arg) {
+    // get passed parameter
+    flatpack2_t *fp2 = (flatpack2_t *)arg;
 
+    // should never execute
     vTaskDelete(NULL);
 }
 
-static void twaiRxTask(void *arg) {
-
+void twaiRxTask(void *arg) {
+    // get messages and process the heck out of them
     while (true) {
-        twai_message_t rxBuf;
-        esp_err_t      twaiRxErr = twai_receive(&rxBuf, pdMS_TO_TICKS(30 * 1000));
-        if (twaiRxErr == ESP_OK) {
-            char logBuf[80];
-            snprintf(logBuf, sizeof(logBuf), "rx msg: ID 0x%.8x data 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x",
-                     rxBuf.identifier, rxBuf.data[0], rxBuf.data[1], rxBuf.data[2], rxBuf.data[3], rxBuf.data[4], rxBuf.data[5],
-                     rxBuf.data[6], rxBuf.data[7]);
-            ESP_LOGI(TWAI_RX_TASK_TAG, "%s", logBuf);
+        twai_message_t rxMsg;
+        esp_err_t      rxErr = twai_receive(&rxMsg, pdMS_TO_TICKS(TWAI_RX_TIMEOUT_SEC * 1000));
+        if (rxErr == ESP_OK) {
+            if (TWAI_RX_LOG_ALL) {
+                logTwaiRxMsg(&rxMsg);
+            }
+
+            if ((rxMsg.identifier & FP2_MSG_MASK) == FP2_MSG_HELLO) {
+            }
+
         } else {
-            const char *rx_err_string = esp_err_to_name(twaiRxErr);
-            ESP_LOGW(TWAI_RX_TASK_TAG, "packet RX error: %s", rx_err_string);
+            const char *rx_err_string = esp_err_to_name(rxErr);
+            ESP_LOGW(TWAI_RX_TASK_TAG, "rxMsg error! %s", rx_err_string);
         }
     }
 
+    // should never execute
     vTaskDelete(NULL);
+}
+
+// function to dump received TWAI messages to console
+static void logTwaiRxMsg(twai_message_t *rxMsg) {
+    char logBuf[80];
+    snprintf(logBuf, sizeof(logBuf), "rxMsg ID 0x%.8x: 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x", rxMsg->identifier,
+             rxMsg->data[0], rxMsg->data[1], rxMsg->data[2], rxMsg->data[3], rxMsg->data[4], rxMsg->data[5], rxMsg->data[6],
+             rxMsg->data[7]);
+    ESP_LOGI(TWAI_RX_LOG_TAG, "%s", logBuf);
+}
+
+// fill out the login information in the flatpack2_t structure
+esp_err_t saveFp2Details(twai_message_t *rxMsg) {
+    // extract current PSU ID and serial number
+    fp2.id = (uint8_t)(rxMsg->identifier >> 16 & 0xff);
+    for (int i = 0; i < 6; i++) {
+        fp2.serial[i] = rxMsg->data[i];
+    }
+
+    // assemble login message ID; 0x050048xx, where xx = (desired ID) * 4
+    // shifting received ID 18 bits left puts it in the right spot and multiplies it by 4
+    fp2.login_id = (uint32_t)((fp2.id << 2) | FP2_CMD_LOGIN);
+
+    // print device found message
+    char logBuf[80];
+    snprintf(logBuf, sizeof(logBuf), "found flatpack2! S/N %.2x%.2x%.2x%.2x%.2x%.2x, ID 0x%02x, login_id 0x%08x", fp2.serial[0],
+             fp2.serial[1], fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5], fp2.id, fp2.login_id);
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "%s", logBuf); // warning log level so it stands out
+    xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
+    return ESP_OK;
 }
 
 // convert FP2 alert bits to strings
 static void fp2AlertMsgProcess(uint8_t alertBuf[]) {
-    uint8_t alarm_byte_0 = alertBuf[3];
-    uint8_t alarm_byte_1 = alertBuf[4];
+    uint8_t alert_byte_low  = alertBuf[3];
+    uint8_t alert_byte_high = alertBuf[4];
     switch (alertBuf[1]) {
         case FP2_STATUS_WARN:
             ESP_LOGW(FP2_ALERT_TAG, "PSU has warnings:");
             for (int i = 0; i < 8; i++) {
-                if (alarm_byte_0 & (1 << i)) {
+                if (alert_byte_low & (0x1 << i)) {
                     ESP_LOGW(FP2_ALERT_TAG, "%s", fp2_alerts0_str[i]);
                 }
-                if (alarm_byte_1 & (1 << i)) {
+                if (alert_byte_high & (0x1 << i)) {
                     ESP_LOGW(FP2_ALERT_TAG, "%s", fp2_alerts1_str[i]);
                 }
             }
@@ -512,10 +505,10 @@ static void fp2AlertMsgProcess(uint8_t alertBuf[]) {
         case FP2_STATUS_ALARM:
             ESP_LOGE(FP2_ALERT_TAG, "PSU has errors:");
             for (int i = 0; i < 8; i++) {
-                if (alarm_byte_0 & (1 << i)) {
+                if (alert_byte_low & (1 << i)) {
                     ESP_LOGE(FP2_ALERT_TAG, "%s", fp2_alerts0_str[i]);
                 }
-                if (alarm_byte_1 & (1 << i)) {
+                if (alert_byte_high & (1 << i)) {
                     ESP_LOGE(FP2_ALERT_TAG, "%s", fp2_alerts1_str[i]);
                 }
             }
@@ -528,9 +521,12 @@ static void fp2AlertMsgProcess(uint8_t alertBuf[]) {
  * * flatpack2 login loop task
  * TODO: make sure this like, works
  */
-void fp2LoginTask(void *pvParameter) {
+void fp2LoginTask(void *arg) {
     // get passed parameter
-    flatpack2_t *fp2 = (flatpack2_t *)pvParameter;
+    flatpack2_t *fp2 = (flatpack2_t *)arg;
+
+    // wait for indication that the PSU's details are available
+    xEventGroupWaitBits(appEventGroup, FP2_FOUND_BIT, false, true, portMAX_DELAY);
 
     // assemble login packet
     twai_message_t login_msg;
@@ -545,26 +541,22 @@ void fp2LoginTask(void *pvParameter) {
         login_msg.data[i] = fp2->serial[i];
     }
 
-    // initialize task handler delay loop
-    TickType_t       xLastLoginTime;
-    const TickType_t xTaskInterval = pdMS_TO_TICKS(FP2_LOGIN_INTERVAL * 1000);
-
-    // send a login roughly every FP2_LOGIN_INTERVAL seconds
-    xLastLoginTime = xTaskGetTickCount();
-
+    // wait for "login required" notification and send a packet every time it's flagged
+    // we should have been given the semaphore already
     while (true) {
-        // Try to take the semaphore and send a login packet
-        if (pdTRUE == xSemaphoreTake(xFp2LoginSemaphore, portMAX_DELAY)) {
-            ESP_LOGI(FP2_LOGIN_TASK_TAG, "sending login to PSU 0x%02x at ID 0x%08x", fp2->id, fp2->login_id);
-            twai_transmit(&login_msg, pdMS_TO_TICKS(FP2_LOGIN_INTERVAL / 2));
-            xSemaphoreGive(xFp2LoginSemaphore);
-            // wait for next interval
-            vTaskDelayUntil(&xLastLoginTime, xTaskInterval);
+        if (pdTRUE == xSemaphoreTake(fp2LoginReqSem, portMAX_DELAY)) {
+            esp_err_t err;
+            err = twai_transmit(&login_msg, pdMS_TO_TICKS(TWAI_RX_TIMEOUT_SEC * 1000));
+            if (err == ESP_OK) {
+                ESP_LOGI(FP2_LOGIN_TASK_TAG, "logging into PSU 0x%.2x at ID 0x%.8x", fp2->id, fp2->login_id);
+            } else {
+                const char *tx_err_str = esp_err_to_name(err);
+                ESP_LOGE(FP2_LOGIN_TASK_TAG, "failed to send login! %s", tx_err_str);
+            }
         }
     }
 
     // should never execute
-    xEventGroupClearBits(fp2EventGroup, FP2_LOGIN_BIT);
     vTaskDelete(NULL);
 }
 
