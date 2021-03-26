@@ -77,7 +77,7 @@
 // TWAI transcever (MAX3051ESA+ in my case) configuration
 #define TWAI_EN_GPIO        CONFIG_TWAI_EN_GPIO
 #define TWAI_EN_GPIO_SEL    (1ULL << TWAI_EN_GPIO)
-#define TWAI_EN_ACTIVE        CONFIG_TWAI_EN_ACTIVE_STATE
+#define TWAI_EN_ACTIVE      CONFIG_TWAI_EN_ACTIVE_STATE
 #define TWAI_RX_TIMEOUT_SEC 30
 #define TWAI_RX_LOG_ALL     1
 
@@ -455,15 +455,16 @@ void twaiRxTask(void *arg) {
                 continue;
             }
 
-
             // is this an FP2_MSG_HELLO?
-            if ((rxMsg.identifier & FP2_MSG_MASK) == FP2_MSG_HELLO) {
+            else if ((rxMsg.identifier & FP2_MSG_MASK) == FP2_MSG_HELLO) {
                 // it is! save the updated details
                 saveFp2Details(&rxMsg);
+                // give login task permission to #sendit
+                xSemaphoreGive(fp2LoginReqSem);
             }
 
             // log unknown message types if enabled
-            if (TWAI_RX_LOG_ALL) {
+            if (TWAI_RX_LOG_ALL || !msgProcessed) {
                 logTwaiRxMsg(&rxMsg);
             }
         } else if (rxErr != ESP_ERR_TIMEOUT) {
@@ -537,16 +538,13 @@ static void processFp2Alerts(uint8_t alertBuf[]) {
 }
 
 
-/****************************************************************
+/**
  * * flatpack2 login loop task
  * TODO: make sure this like, works
  */
 void fp2LoginTask(void *arg) {
     // get passed parameter
     flatpack2_t *fp2 = (flatpack2_t *)arg;
-
-    // wait for indication that the PSU's details are available
-    xEventGroupWaitBits(appEventGroup, FP2_FOUND_BIT, false, true, portMAX_DELAY);
 
     // initialize login msg
     twai_message_t login_msg = {
@@ -558,14 +556,13 @@ void fp2LoginTask(void *arg) {
         .data             = {0},
     };
 
-    // wait for "login required" notification and send a packet every time it's flagged
-    // we should have been given the semaphore already
+    // wait for login request semaphore and send message
     while (true) {
         if (pdTRUE == xSemaphoreTake(fp2LoginReqSem, portMAX_DELAY)) {
-            // update login message ID and payload in case the PSU we're talking to has changed
-            if (!memcmp(&login_msg.data, &fp2->login_id, 6)) {
-                login_msg.identifier = fp2->login_id;
+            // check if the PSU has changed and update login message as required
+            if (!memcmp(&login_msg.data, &fp2->serial, 6)) {
                 memcpy(&login_msg.data, &fp2->serial, sizeof(fp2->serial));
+                login_msg.identifier = fp2->login_id;
             }
 
             // send the message and go back to waiting
