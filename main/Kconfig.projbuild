@@ -14,19 +14,28 @@ menu "flatpack2s2 Project Configuration"
             int "TWAI TX GPIO"
             default 15
             help
-                Selects GPIO used for TWAI (CAN) bus transmit. Connect to your CAN transceiver.
+                Selects GPIO used for TWAI (CAN) bus transmit. Connect to your CAN transceiver's TX pin.
 
         config TWAI_RX_GPIO
             int "TWAI RX GPIO"
             default 16
             help
-                Selects GPIO used for TWAI (CAN) bus receive. Connect to your CAN transceiver.
+                Selects GPIO used for TWAI (CAN) bus receive. Connect to your CAN transceiver's RX pin.
 
         config TWAI_EN_GPIO
-            int "TWAI EN GPIO"
+            int "TWAI transceiver enable GPIO"
             default 17
             help
                 Selects GPIO used for TWAI (CAN) bus transceiver enable. Connect to your CAN transciever.
+
+        config TWAI_EN_ACTIVE_STATE
+            int "TWAI_EN output state when transceiver is active"
+            default 0
+            range 0 1
+            help
+                0 = TWAI_EN will be driven low to enable the transceiver and high to disable.
+                1 = TWAI_EN will be driven high to enable the transceiver and low to disable.
+                Most transceivers are active-low (0).
 
     endmenu #TWAI
 
