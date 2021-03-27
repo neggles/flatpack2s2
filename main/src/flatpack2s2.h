@@ -39,7 +39,7 @@
  * Intake and exhaust temperatures are 8-bit uints in degrees Celsius
  * Vin, Vout, Iout are all 16-bit uints split into low and high bytes
  * Vin and Vout are in centiVolts (1/100ths of a volt or 10mV/bit)
- * Iout is in deciAmps (1/100ths of an amp or 10mA/bit)
+ * Iout is in deciAmps (1/10ths of an amp or 100mA/bit)
  * All values are little-endian
  *
  */
@@ -88,9 +88,9 @@
  */
 
 typedef struct {
-    uint8_t        serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
-    uint8_t        id;        //< PSU's chosen/assigned ID number, 0x04-0x3F
-    twai_message_t login_msg; //< message to send this PSU to log into it
+    uint8_t  serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
+    uint8_t  id;        //< PSU's chosen/assigned ID number, 0x04-0x3F
+    uint32_t login_id;  //< message to send this PSU to log into it
 } flatpack2_t;
 
 typedef enum {
