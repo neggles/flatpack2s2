@@ -13,6 +13,8 @@ jobs:
     steps:
       # checkout repo
       - uses: actions/checkout@v2
+        with:
+          submodules: 'recursive'
 
       # copy sdkconfig.s2usb to sdkconfig
       - name: copy-sdkconfig
