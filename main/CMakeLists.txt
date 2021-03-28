@@ -1,5 +1,5 @@
 set(project_srcs "src/helpers.c" "main.c")
-set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function")
+set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function" "-D LOG_LOCAL_LEVEL=ESP_LOG_DEBUG")
 
 idf_component_register(
     SRCS "${project_srcs}"

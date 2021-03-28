@@ -5,11 +5,13 @@
 // need the twai_message_t
 #include "driver/twai.h"
 
+// default PSU ID to assign a PSU
+#define FP2_ID_DEFAULT 0x01
+
 // bitmasks to extract command / PSU address from msg ID field
 #define FP2_MSG_MASK    0xff00ffff
 #define FP2_ADDR_MASK   0x00ff0000
-#define FP2_LOGIN_MASK  0xff00ff00
-#define FP2_STATUS_MASK 0xffffff00
+#define FP2_STATUS_MASK 0xff00ff00
 
 // TX message IDs for PSU commands
 #define FP2_CMD_LOGIN     0x05004800
@@ -23,7 +25,7 @@
 #define FP2_MSG_STATUS    0x05004000
 #define FP2_MSG_LOGIN_REQ 0x05000000
 #define FP2_MSG_HELLO     0x05004400
-#define FP2_MSG_ALARMS    0x0500BFFC
+#define FP2_MSG_ALERTS    0x0500BFFC
 
 // status codes (last byte of ID in MSG_STATUS)
 #define FP2_STATUS_OK     0x04 /* PSU status normal, CV mode */
@@ -88,18 +90,24 @@
  */
 
 typedef struct {
-    uint8_t  serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
-    uint8_t  id;        //< PSU's chosen/assigned ID number, 0x04-0x3F
-    uint32_t login_id;  //< message to send this PSU to log into it
+    uint8_t        serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
+    uint8_t        id;        //< PSU's chosen/assigned ID number, 0x04-0x3F
+    uint32_t       cmd_id;    //< PSU's command ID number, ID left-shifted by 18 bits
+    uint32_t          in_volts; //< current input voltage
+    float          out_volts;
+    float          out_amps;
+    float          out_watts;
+    uint32_t       temp_intake;
+    uint32_t       temp_exhaust;
+    uint8_t        status;
+    twai_message_t msg_login; //< message to send this PSU to log into it
 } flatpack2_t;
 
 typedef enum {
-    TX_FP2_LOGIN,
-    TX_FP2_SET_DEF,
-    TX_FP2_SET_OUT,
-    TX_FP2_GET_ALARM,
-    TX_TASK_EXIT,
+    send_login,
+    set_defaults,
+    set_output,
+    request_alerts,
 } twai_tx_action_t;
-
 
 #endif /* !FLATPACK2_H_ */

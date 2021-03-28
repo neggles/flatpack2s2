@@ -5,7 +5,6 @@
   TabWidth: 4,
   ColumnLimit: 135,
   UseTab: Never,
-  AccessModifierOffset: -4,
   AlignConsecutiveAssignments: true,
   AlignConsecutiveDeclarations: true,
   AlignConsecutiveMacros: true,
@@ -25,4 +24,5 @@
   PointerAlignment: Right,
   DerivePointerAlignment: false,
   BreakBeforeBraces: Attach,
+  PenaltyExcessCharacter: 10,
 }
