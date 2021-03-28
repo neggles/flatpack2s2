@@ -22,7 +22,7 @@ jobs:
 
       # run build of project in latest esp-idf container
       - name: ESP-IDF v4.x build
-        uses: CalinRadoni/esp-idf-v4-container-action@v4.1
+        uses: CalinRadoni/esp-idf-v4-container-action@latest
         id: esp-idf-build
 
       - name: Show the exit code
