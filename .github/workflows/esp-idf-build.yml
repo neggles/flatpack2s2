@@ -1,10 +1,12 @@
 name: esp-idf-build
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - 'release/**'
   pull_request:
-    branches: [ master ]
-
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
@@ -12,18 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # checkout repo
-      - uses: actions/checkout@v2
+      - name: Checkout and recurse submodules
+        id: checkout-recursive
+        uses: actions/checkout@v2
         with:
           submodules: 'recursive'
 
       # copy sdkconfig.s2usb to sdkconfig
-      - name: copy-sdkconfig
+      - name: Copy sdkconfig
+        id: copy-sdkconfig
         run: cp sdkconfig.s2usb sdkconfig
 
-      # run build of project in latest esp-idf container
-      - name: ESP-IDF v4.x build
-        uses: CalinRadoni/esp-idf-v4-container-action@latest
-        id: esp-idf-build
 
-      - name: Show the exit code
-        run: echo "The exit code was ${{ steps.esp-idf-build.outputs.result }}"
+      # run build of project in latest esp-idf container
+      - name: ESP-IDF Build
+        id: esp-idf-build
+        uses: CalinRadoni/esp-idf-v4-container-action@latest
+
+      # copy the build exit code to the job exit code
+      - name: Set exit code
+        run: exit ${{ steps.esp-idf-build.outputs.result }}
