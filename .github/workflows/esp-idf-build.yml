@@ -25,7 +25,6 @@ jobs:
         id: copy-sdkconfig
         run: cp sdkconfig.s2usb sdkconfig
 
-
       # run build of project in latest esp-idf container
       - name: ESP-IDF Build
         id: esp-idf-build
