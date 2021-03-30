@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-void func(void);
+void lvgl_gpiodev_init(void);
 
 #ifdef __cplusplus
 } /* extern "C" */

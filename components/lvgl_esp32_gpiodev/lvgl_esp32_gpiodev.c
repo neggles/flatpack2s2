@@ -7,37 +7,39 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
-#include "lvgl_esp32_gpiodev.h"
 #include "sdkconfig.h"
+#include "lvgl_esp32_gpiodev.h"
 
 // lvgl graphics library
-#include "lvgl.h"
-#include "lvgl_helpers.h"
+#ifdef LV_LVGL_H_INCLUDE_SIMPLE
+#include "src/lv_core/lv_indev.h"
+#include "src/lv_hal/lv_hal_indev.h"
+#else
+#include "lvgl/src/lv_core/lv_indev.h"
+#include "lvgl/src/lv_hal/lv_hal_indev.h"
+#endif
 
 // LVGL indev pin definitions
-#define BTN_SELECT = CONFIG_FP2S2_SW_S_GPIO;
-#define BTN_LEFT   = CONFIG_FP2S2_SW_L_GPIO;
-#define BTN_RIGHT  = CONFIG_FP2S2_SW_R_GPIO;
-#define BTN_BACK   = CONFIG_FP2S2_SW_B_GPIO;
+#define BTN_SELECT CONFIG_FP2S2_SW_S_GPIO
+#define BTN_LEFT   CONFIG_FP2S2_SW_L_GPIO
+#define BTN_RIGHT  CONFIG_FP2S2_SW_R_GPIO
+#define BTN_BACK   CONFIG_FP2S2_SW_B_GPIO
 
 #define GPIO_BTN_PIN_SEL      ((1ULL << BTN_SELECT) | (1ULL << BTN_LEFT) | (1ULL << BTN_RIGHT) | (1ULL << BTN_BACK))
 #define ESP_INTR_FLAG_DEFAULT 0
 
 // gpio event queue
-static xQueueHandle gpio_evt_queue = NULL;
+static uint32_t last_gpio;
 
-// gpio states
-static bool btn_sel_state;
-static bool btn_left_state;
-static bool btn_right_state;
-static bool btn_back_state;
+// function prototypes
+static uint32_t gpio_to_keycode(uint32_t io_num);
+static bool lvgl_gpiodev_read(lv_indev_drv_t *drv, lv_indev_data_t *data);
 
 static void IRAM_ATTR gpio_isr_handler(void *arg) {
-    uint32_t gpio_num = (uint32_t)arg;
-    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+    last_gpio = (uint32_t)arg;
 }
 
-void lvgl_indev_init(void) {
+void lvgl_gpiodev_init(void) {
     // configure GPIOs for input device
     gpio_config_t io_conf;
     // we want to be told about both rising and falling edges
@@ -52,11 +54,6 @@ void lvgl_indev_init(void) {
     // submit config
     gpio_config(&io_conf);
 
-    // create event queue
-    gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
-    // start gpio update task
-    xTaskCreate(gpio_state_update, "lvgl_gpiodev_update", 2048, NULL, 10, NULL);
-
     // install ISR service
     gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
 
@@ -67,27 +64,22 @@ void lvgl_indev_init(void) {
     gpio_isr_handler_add(BTN_BACK, gpio_isr_handler, (void *)BTN_BACK);
 
     // configure GPIO keypad driver
-    lv_indev_drv_t lv_keypad;
-    lv_indev_drv_init(&lv_keypad);
-    lv_keypad.type = LV_INDEV_TYPE_ENCODER;
+    lv_indev_drv_t lv_gpiodev;
+    lv_indev_drv_init(&lv_gpiodev);
+    lv_gpiodev.type = LV_INDEV_TYPE_ENCODER;
+    lv_gpiodev.read_cb = lvgl_gpiodev_read;
+    lv_indev_t * gpio_indev = lv_indev_drv_register(&lv_gpiodev);
 }
 
 bool lvgl_gpiodev_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     (void)drv;
-    uint32_t io_num;
-    if (xQueueReceive(gpio_evt_queue, &io_num, 0)) {
-        if(gpio_get_level(io_num) == 0) {
-            data->state = LV_INDEV_STATE_PRESSED;
-        } else {
-            data->state = LV_INDEV_STATE_RELEASED;
-        }
-        data->key = gpio_to_keycode(io_num);
-    }
-    if(uxQueueMessagesWaiting(gpio_evt_queue) > 0) {
-        return true; // we have more events to process
+    if (gpio_get_level(last_gpio) == 0) {
+        data->state = LV_INDEV_STATE_PR;
     } else {
-        return false; // no more data
+        data->state = LV_INDEV_STATE_REL;
     }
+    data->key = gpio_to_keycode(last_gpio);
+    return false; // no more data
 }
 
 // map GPIO number to LVGL keycode
