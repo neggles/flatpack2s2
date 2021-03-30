@@ -97,6 +97,14 @@ menu "flatpack2s2 Project Configuration"
             help
                 Selects GPIO for SW5 (SW_R)
 
+        config FP2S2_SW_B_GPIO
+            int "Button 1 (SW_B/BOOT) GPIO"
+            default 0
+            help
+                Selects GPIO for SW1 (SW_B/BOOT) which is used for BACK while running.
+                NOTE: This does not affect hardware handling of GPIO0, but it does allow assigning a different GPIO
+                to the BACK function in the app.
+
         config FP2S2_RGB_GPIO
             int "WS2812B RGB LED GPIO"
             default 38

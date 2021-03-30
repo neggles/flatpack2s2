@@ -94,7 +94,7 @@
 static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
 static const int btn_enter = CONFIG_FP2S2_SW_S_GPIO;
 static const int btn_right = CONFIG_FP2S2_SW_R_GPIO;
-static const int btn_back  = GPIO_NUM_0;
+static const int btn_back  = CONFIG_FP2S2_SW_B_GPIO;
 
 // Log tag strings
 static const char *TAG                = "flatpack2s2";
@@ -280,20 +280,18 @@ static void displayTask(void *ignore) {
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
 
-    // initialise task handler delay loop
-    TickType_t       xLvglWakeTime;
-    const TickType_t xLvglTaskInterval = pdMS_TO_TICKS(LV_TASK_PERIOD_MS);
 
-    // run task handler delay loop forever and ever
-    xLvglWakeTime = xTaskGetTickCount();
+    // run lv_task_handler loop
+    uint32_t lv_delay;
     while (true) {
+        lv_delay = 10;
         // Try to take the semaphore, call lvgl task handler on success
-        if (pdTRUE == xSemaphoreTake(xLvglMutex, portMAX_DELAY)) {
-            lv_task_handler();
+        if (pdTRUE == xSemaphoreTake(xLvglMutex, pdMS_TO_TICKS(lv_delay) / 2)) {
+            lv_delay = lv_task_handler();
             xSemaphoreGive(xLvglMutex);
         }
         // wait for next interval
-        vTaskDelayUntil(&xLvglWakeTime, xLvglTaskInterval);
+        vTaskDelay(pdMS_TO_TICKS(lv_delay));
     }
 
     /* A task should NEVER return */
@@ -465,7 +463,7 @@ void twaiCtrlTask(void *ignore) {
         // get and log status, regardless of whether we succeeded or failed
         twai_status_info_t status;
         twai_get_status_info(&status);
-        ESP_LOGI(TWAI_CTRL_TASK_TAG, "[TWAI] state=%d arb=%d err=%d [TX] q=%d err=%d fail=%d [RX] q=%d err=%d miss=%d",
+        ESP_LOGD(TWAI_CTRL_TASK_TAG, "[TWAI] state=%d arb=%d err=%d [TX] q=%d err=%d fail=%d [RX] q=%d err=%d miss=%d",
                  (int)status.state, status.arb_lost_count, status.bus_error_count, status.msgs_to_tx, status.tx_error_counter,
                  status.tx_failed_count, status.msgs_to_rx, status.rx_error_counter, status.rx_missed_count);
     }
