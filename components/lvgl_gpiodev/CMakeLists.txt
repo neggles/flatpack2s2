@@ -1,4 +1,4 @@
-idf_component_register(SRCS "lvgl_esp32_gpiodev.c"
+idf_component_register(SRCS "lvgl_gpiodev.c"
                     INCLUDE_DIRS "include"
                     PRIV_REQUIRES "driver"
                     REQUIRES "lvgl" "lvgl_esp32_drivers")

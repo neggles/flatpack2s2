@@ -59,6 +59,9 @@
 #include "lvgl.h"
 #include "lvgl_helpers.h"
 
+// gpiodev
+#include "lvgl_gpiodev.h"
+
 // Extra project source files (helper functions etc.)
 #include "helpers.h"
 // fp2 #defines go in here
@@ -111,6 +114,7 @@ static const char *FP2_STATUS_TAG     = "fp2.Status";
 static const char *FP2_ALERT_TAG      = "fp2.Alert";
 static const char *FP2_LOGIN_TAG      = "fp2.Login";
 
+
 // * Flatpack2-related Constants
 // ! see also: src/flatpack2.h
 static const uint32_t fp2_vout_min = CONFIG_FP2_VOUT_MIN;
@@ -156,6 +160,9 @@ static float esp_internal_temp;
 
 // fp2 object
 static flatpack2_t fp2;
+
+// lvgl gpio indev
+lv_indev_t *gpio_indev;
 
 // setpoints
 static uint32_t set_voltage; // desired setpoint voltage
@@ -262,6 +269,14 @@ static void displayTask(void *ignore) {
     disp_drv.buffer     = &disp_buf;
     lv_disp_drv_register(&disp_drv);
     lv_log_register_print_cb(&cb_lvglLog);
+
+    // set up GPIO indev_drv
+    // configure GPIO keypad driver
+    lv_indev_drv_t lv_gpiodev;
+    lv_indev_drv_init(&lv_gpiodev);
+    lv_gpiodev.type    = LV_INDEV_TYPE_ENCODER;
+    lv_gpiodev.read_cb = lvgl_gpiodev_read;
+    gpio_indev         = lv_indev_drv_register(&lv_gpiodev);
 
     /* Create and start a periodic timer interrupt to call lv_tick_inc from lvTickTimer() */
     const esp_timer_create_args_t lvgl_timer_args = {
@@ -411,8 +426,7 @@ void twaiCtrlTask(void *ignore) {
     xTwaiTxQueue = xQueueCreate(10, sizeof(twai_message_t));
     xTaskCreate(&twaiTxTask, "twaiTxTask", 1024 * 8, NULL, 5, &txTaskHandle);
 
-    // handle alerts
-    // TODO: handle alerts
+    // handle alerts and print status
     while (true) {
         esp_err_t err;
 

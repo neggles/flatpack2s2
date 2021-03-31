@@ -8,7 +8,7 @@
 #include "freertos/task.h"
 
 #include "sdkconfig.h"
-#include "lvgl_esp32_gpiodev.h"
+#include "lvgl_gpiodev.h"
 
 // lvgl graphics library
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
@@ -28,12 +28,10 @@
 #define GPIO_BTN_PIN_SEL      ((1ULL << BTN_SELECT) | (1ULL << BTN_LEFT) | (1ULL << BTN_RIGHT) | (1ULL << BTN_BACK))
 #define ESP_INTR_FLAG_DEFAULT 0
 
-// gpio event queue
+// gpio state var
 static uint32_t last_gpio;
 
 // function prototypes
-static uint32_t gpio_to_keycode(uint32_t io_num);
-static bool lvgl_gpiodev_read(lv_indev_drv_t *drv, lv_indev_data_t *data);
 
 static void IRAM_ATTR gpio_isr_handler(void *arg) {
     last_gpio = (uint32_t)arg;
@@ -62,24 +60,6 @@ void lvgl_gpiodev_init(void) {
     gpio_isr_handler_add(BTN_LEFT, gpio_isr_handler, (void *)BTN_LEFT);
     gpio_isr_handler_add(BTN_RIGHT, gpio_isr_handler, (void *)BTN_RIGHT);
     gpio_isr_handler_add(BTN_BACK, gpio_isr_handler, (void *)BTN_BACK);
-
-    // configure GPIO keypad driver
-    lv_indev_drv_t lv_gpiodev;
-    lv_indev_drv_init(&lv_gpiodev);
-    lv_gpiodev.type = LV_INDEV_TYPE_ENCODER;
-    lv_gpiodev.read_cb = lvgl_gpiodev_read;
-    lv_indev_t * gpio_indev = lv_indev_drv_register(&lv_gpiodev);
-}
-
-bool lvgl_gpiodev_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-    (void)drv;
-    if (gpio_get_level(last_gpio) == 0) {
-        data->state = LV_INDEV_STATE_PR;
-    } else {
-        data->state = LV_INDEV_STATE_REL;
-    }
-    data->key = gpio_to_keycode(last_gpio);
-    return false; // no more data
 }
 
 // map GPIO number to LVGL keycode
@@ -91,4 +71,15 @@ static uint32_t gpio_to_keycode(uint32_t io_num) {
         case BTN_BACK: return LV_KEY_ESC;
         default: return 0;
     }
+}
+
+bool lvgl_gpiodev_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+    (void)drv;
+    if (gpio_get_level(last_gpio) == 0) {
+        data->state = LV_INDEV_STATE_PR;
+    } else {
+        data->state = LV_INDEV_STATE_REL;
+    }
+    data->key = gpio_to_keycode(last_gpio);
+    return false; // no more data
 }
