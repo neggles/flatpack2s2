@@ -147,6 +147,7 @@ static const int CONSOLE_RUN_BIT    = BIT15;
 
 // TWAI transmit task queue
 static QueueHandle_t xTwaiTxQueue;
+static QueueHandle_t xLedQueue;
 
 // lvgl driver mutex
 static SemaphoreHandle_t xLvglMutex; // lvgl2 mutex
@@ -229,6 +230,8 @@ void app_main(void) {
     xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 8, NULL, 6, NULL);
 
     //* Create RGB LED update task
+    xLedQueue = xQueueCreate(10, sizeof(led_hsv_t));
+    assert(xLedQueue != NULL);
     xTaskCreate(&ledTask, "ledTask", 1024 * 4, NULL, 3, NULL);
 
     //* Create temp sensor polling task
@@ -331,7 +334,7 @@ void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const cha
     }
 }
 
-// setup initial display state
+// setup lvgl app screens and transitions
 static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
@@ -711,14 +714,14 @@ static void logTwaiMsg(twai_message_t *twaiMsg, int is_tx, const char *msgType, 
 void ledTask(void *ignore) {
     ESP_LOGI(LED_TASK_TAG, "initializing RGB LED");
 
+    // local RGB value variables
     uint32_t red   = 0;
     uint32_t green = 0;
     uint32_t blue  = 0;
 
+    // configure RMT peripheral
     rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_FP2S2_RGB_GPIO, RMT_LED_CHANNEL);
-    // set counter clock to 40MHz
     config.clk_div = 2;
-    // install RMT driver
     ESP_ERROR_CHECK(rmt_config(&config));
     ESP_LOGV(LED_TASK_TAG, "RMT driver configured");
     ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));
@@ -741,7 +744,9 @@ void ledTask(void *ignore) {
     const TickType_t xTaskInterval = pdMS_TO_TICKS(1000 / LED_UPDATE_RATE_HZ);
 
     // this is a placeholder that just does a rainbow cycle until I have this actually set up
+    led_hsv_t hsv_val;
     while (true) {
+        xQueueReceive(xLedQueue, &hsv_val, 0);
         for (int i = 0; i < 360; i++) {
             // build RGB value
             led_hsv2rgb(i, 100, 30, &red, &green, &blue);
@@ -752,6 +757,9 @@ void ledTask(void *ignore) {
             vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
         }
     }
+
+    // should never execute
+    vQueueDelete(xLedQueue);
     vTaskDelete(NULL);
 }
 
