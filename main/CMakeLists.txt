@@ -1,4 +1,4 @@
-set(project_srcs "src/helpers.c" "main.c")
+set(project_srcs "src/helpers.c" "src/flatpack2.c" "main.c")
 set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function" "-D LOG_LOCAL_LEVEL=ESP_LOG_DEBUG")
 
 idf_component_register(

@@ -64,8 +64,8 @@
 
 // Extra project source files (helper functions etc.)
 #include "helpers.h"
-// fp2 #defines go in here
-#include "flatpack2s2.h"
+// flatpack2 helper functions and definitions
+#include "flatpack2.h"
 
 
 // * -------------------- Definitions and static variables ------------------ */
@@ -109,10 +109,7 @@ static const char *TEMP_TASK_TAG      = "espTemp";
 static const char *TWAI_CTRL_TASK_TAG = "twai.Ctrl";
 static const char *TWAI_TX_TASK_TAG   = "twai.Tx";
 static const char *TWAI_RX_TASK_TAG   = "twai.Rx";
-static const char *TWAI_LOG_TAG       = "twai.Msg";
-static const char *FP2_STATUS_TAG     = "fp2.Status";
-static const char *FP2_ALERT_TAG      = "fp2.Alert";
-static const char *FP2_LOGIN_TAG      = "fp2.Login";
+static const char *TWAI_MSG_LOG_TAG   = "twai.Msg";
 
 
 // * Flatpack2-related Constants
@@ -120,12 +117,6 @@ static const char *FP2_LOGIN_TAG      = "fp2.Login";
 static const uint32_t fp2_vout_min = CONFIG_FP2_VOUT_MIN;
 static const uint32_t fp2_vout_max = CONFIG_FP2_VOUT_MAX;
 static const uint32_t fp2_iout_max = CONFIG_FP2_IOUT_MAX;
-
-const char *fp2_alerts0_str[] = {"OVS Lockout",       "Primary Module Failure", "Secondary Module Failure", "Mains Voltage High",
-                                 "Mains Voltage Low", "Temperature High",       "Temperature Low",          "Current Over Limit"};
-const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure",        "Secondary Module Failure",
-                                 "Fan 1 Speed Low",        "Fan 2 Speed Low",       "Sub-module 1 Failure",
-                                 "Fan 3 Speed Low",        "Internal Voltage Fault"};
 
 
 // * --------------- Eventgroup, queue, and semaphore handles --------------- */
@@ -163,7 +154,7 @@ static float esp_internal_temp;
 static flatpack2_t fp2;
 
 // lvgl gpio indev
-lv_indev_t *gpio_indev;
+static lv_indev_t *gpio_indev;
 
 // setpoints
 static uint32_t set_voltage; // desired setpoint voltage
@@ -188,10 +179,6 @@ static void twaiTxTask(void *ignore);
 // Functions
 static void lvAppCreate(void);
 static void initialiseConsole(void);
-static void updateFp2Details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq);
-static void processFp2Alert(twai_message_t *rxMsg);
-static void processFp2Status(twai_message_t *rxMsg, flatpack2_t *psu);
-static void logTwaiMsg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_log_level_t errLevel);
 
 // Callbacks
 static void cb_netConnected(void *ignore);
@@ -212,7 +199,7 @@ void app_main(void) {
 
     //* logging config
     esp_log_level_set("*", ESP_LOG_INFO);
-    if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_LOG_TAG, ESP_LOG_DEBUG);
+    if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
 
     //* initialise the main app event group
     appEventGroup = xEventGroupCreate();
@@ -247,8 +234,16 @@ static void displayTask(void *ignore) {
 
     lv_init();
     lvgl_driver_init();
+    lvgl_gpiodev_init();
 
-    // configure for B&W OLED
+    /**
+     * configure for B&W OLED
+     * NOTE: buf2 == NULL when using monochrome displays.
+     * NOTE: When using a monochrome display we need to register two extra callbacks;
+     *        - rounder_cb
+     *        - set_px_cb
+     */
+    // create display buffer
     lv_color_t *buf1 = heap_caps_malloc(DISP_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
     assert(buf1 != NULL);
     static lv_color_t *  buf2 = NULL;
@@ -256,13 +251,7 @@ static void displayTask(void *ignore) {
     /* Actual size in pixels, not bytes. */
     uint32_t size_in_px = DISP_BUF_SIZE * 8;
 
-    /**
-     * initialise the working buffer depending on the selected display.
-     * NOTE: buf2 == NULL when using monochrome displays.
-     * NOTE: When using a monochrome display we need to register two extra callbacks;
-     *        - rounder_cb
-     *        - set_px_cb
-     */
+    // initialize display driver
     lv_disp_buf_init(&disp_buf, buf1, buf2, size_in_px);
     lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
@@ -273,8 +262,7 @@ static void displayTask(void *ignore) {
     lv_disp_drv_register(&disp_drv);
     lv_log_register_print_cb(&cb_lvglLog);
 
-    // set up GPIO indev_drv
-    // configure GPIO keypad driver
+    // initialize GPIO indev_drv
     lv_indev_drv_t lv_gpiodev;
     lv_indev_drv_init(&lv_gpiodev);
     lv_gpiodev.type    = LV_INDEV_TYPE_ENCODER;
@@ -340,6 +328,8 @@ static void lvAppCreate(void) {
 
     // get app data
     const esp_app_desc_t *app_info = esp_ota_get_app_description();
+
+
 
     /* Get the current screen */
     lv_obj_t *scr_def        = lv_disp_get_scr_act(NULL);
@@ -535,9 +525,6 @@ void twaiRxTask(void *ignore) {
                 updateFp2Details(&rxMsg, &fp2, 1);
                 // send login request, then restart loop
                 xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
-                ESP_LOGD(FP2_LOGIN_TAG, "[TX][LOGIN] queued login: msgID 0x%08x PSU 0x%02x SN %02x%02x%02x%02x%02x%02x",
-                         fp2.msg_login.identifier, fp2.id, fp2.msg_login.data[0], fp2.msg_login.data[1], fp2.msg_login.data[2],
-                         fp2.msg_login.data[3], fp2.msg_login.data[4], fp2.msg_login.data[5]);
                 continue;
             }
 
@@ -549,9 +536,6 @@ void twaiRxTask(void *ignore) {
                     updateFp2Details(&rxMsg, &fp2, 0);
                     // send a login request
                     xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
-                    ESP_LOGD(FP2_LOGIN_TAG, "[TX][LOGIN] queued login: msgID 0x%08x PSU 0x%02x SN %02x%02x%02x%02x%02x%02x ",
-                             fp2.msg_login.identifier, fp2.id, fp2.msg_login.data[0], fp2.msg_login.data[1], fp2.msg_login.data[2],
-                             fp2.msg_login.data[3], fp2.msg_login.data[4], fp2.msg_login.data[5]);
                     msgProcessed = true;
                     break;
                 case (FP2_MSG_STATUS | 0x04): // 0x04 = CV / normal
@@ -592,120 +576,6 @@ void twaiRxTask(void *ignore) {
     vTaskDelete(NULL);
 }
 
-// fill out the login information in the flatpack2_t structure
-static void updateFp2Details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
-    const char *msgType = NULL;
-    if (isLoginReq) {
-        msgType = "LOGIN_REQ";
-    } else {
-        msgType = "HELLO";
-    }
-
-    if (memcmp(&psu->serial[0], &rxMsg->data[isLoginReq], sizeof(psu->serial)) != 0) {
-        ESP_LOGI(FP2_LOGIN_TAG, "[RX][%s] Saved PSU SN mismatch, updating", msgType);
-
-        // update PSU ID
-        if (isLoginReq) {
-            // MSG_LOGIN_REQ doesn't have a PSU ID for us to extract, default to ID FP2_ID_DEFAULT
-            psu->id     = FP2_ID_DEFAULT;
-            psu->cmd_id = (FP2_ID_DEFAULT << 18);
-        } else {
-            // Extract existing PSU ID from MSG_HELLO
-            psu->id     = (rxMsg->identifier >> 16) & 0xff;
-            psu->cmd_id = (rxMsg->identifier & 0x00ff0000) << 2;
-        }
-
-        // update serial number
-        memcpy(&psu->serial[0], &rxMsg->data[isLoginReq], sizeof(psu->serial));
-
-        // update msg_login identifier and payload
-        psu->msg_login.identifier = FP2_CMD_LOGIN | (psu->id << 2);
-        memcpy(&psu->msg_login.data[0], &rxMsg->data[isLoginReq], sizeof(psu->serial));
-
-        // print device found message, warning log level so it stands out
-        ESP_LOGW(FP2_LOGIN_TAG, "[RX][%s] PSU ID 0x%02x found: S/N %02x%02x%02x%02x%02x%02x, msg_login id 0x%08x", msgType, psu->id,
-                 psu->serial[0], psu->serial[1], psu->serial[2], psu->serial[3], psu->serial[4], psu->serial[5],
-                 psu->msg_login.identifier);
-
-    } else {
-        ESP_LOGD(FP2_LOGIN_TAG, "[RX][%s] Saved PSU SN matches, no action", msgType);
-    }
-}
-
-// process status message packet and print values
-static void processFp2Status(twai_message_t *rxMsg, flatpack2_t *psu) {
-    psu->temp_intake  = rxMsg->data[FP2_BYTE_INTAKE_TEMP];
-    psu->temp_exhaust = rxMsg->data[FP2_BYTE_EXHAUST_TEMP];
-    psu->out_amps     = ((rxMsg->data[FP2_BYTE_IOUT_H] << 8) + rxMsg->data[FP2_BYTE_IOUT_L]) * 0.1;
-    psu->out_volts    = ((rxMsg->data[FP2_BYTE_VOUT_H] << 8) + rxMsg->data[FP2_BYTE_VOUT_L]) * 0.01;
-    psu->out_watts    = psu->out_amps * psu->out_volts;
-    psu->in_volts     = ((rxMsg->data[FP2_BYTE_VIN_H] << 8) + rxMsg->data[FP2_BYTE_VIN_L]);
-    psu->status       = rxMsg->identifier & 0xff;
-    ESP_LOGI(FP2_STATUS_TAG, "[RX][MSG_STATUS] ID 0x%02x: VIn %03dV, VOut %2.2fV, IOut %2.2fA, POut %4.2fW", psu->id, psu->in_volts,
-             psu->out_volts, psu->out_amps, psu->out_watts);
-    ESP_LOGI(FP2_STATUS_TAG, "[RX][MSG_STATUS]          Intake %d°C, Exhaust %d°C, Status 0x%02x", psu->temp_intake, psu->temp_exhaust,
-             psu->status);
-}
-
-// process and dump alert strings
-static void processFp2Alert(twai_message_t *rxMsg) {
-    uint8_t alert_byte_low  = rxMsg->data[3];
-    uint8_t alert_byte_high = rxMsg->data[4];
-    uint8_t alert_psu_id    = (rxMsg->identifier >> 16) & 0xff;
-    switch (rxMsg->data[1]) {
-        case FP2_STATUS_WARN:
-            ESP_LOGW(FP2_ALERT_TAG, "Warning message from PSU %02x:", alert_psu_id);
-            for (int i = 0; i < 8; i++) {
-                if (alert_byte_low & (0x1 << i)) {
-                    ESP_LOGW(FP2_ALERT_TAG, "  W: %s", fp2_alerts0_str[i]);
-                }
-                if (alert_byte_high & (0x1 << i)) {
-                    ESP_LOGW(FP2_ALERT_TAG, "  W: %s", fp2_alerts1_str[i]);
-                }
-            }
-            break;
-        case FP2_STATUS_ALARM:
-            ESP_LOGE(FP2_ALERT_TAG, "Alert message from PSU %02x:", alert_psu_id);
-            for (int i = 0; i < 8; i++) {
-                if (alert_byte_low & (1 << i)) {
-                    ESP_LOGE(FP2_ALERT_TAG, "  E: %s", fp2_alerts0_str[i]);
-                }
-                if (alert_byte_high & (1 << i)) {
-                    ESP_LOGE(FP2_ALERT_TAG, "  E: %s", fp2_alerts1_str[i]);
-                }
-            }
-            break;
-        default: break;
-    }
-}
-
-// dump received TWAI message to console
-static void logTwaiMsg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_log_level_t errLevel) {
-    // print message ID and type at desired error level
-    const char *msgDir = NULL;
-    if (is_tx) {
-        msgDir = "TX";
-    } else {
-        msgDir = "RX";
-    }
-
-    // print message into buffer and log at appropriate level
-    char buf[100];
-    snprintf(buf, sizeof(buf), "[%s][%s] ID 0x%08x, len=%.2d, extd=%.1d, rtr=%.1d, dlc_non_comp=%.1d", msgDir, msgType,
-             twaiMsg->identifier, twaiMsg->data_length_code, twaiMsg->extd, twaiMsg->rtr, twaiMsg->dlc_non_comp);
-    switch (errLevel) {
-        case ESP_LOG_VERBOSE: ESP_LOGV(TWAI_LOG_TAG, "%s", buf); break;
-        case ESP_LOG_DEBUG: ESP_LOGD(TWAI_LOG_TAG, "%s", buf); break;
-        case ESP_LOG_INFO: ESP_LOGI(TWAI_LOG_TAG, "%s", buf); break;
-        case ESP_LOG_WARN: ESP_LOGW(TWAI_LOG_TAG, "%s", buf); break;
-        case ESP_LOG_ERROR: ESP_LOGE(TWAI_LOG_TAG, "%s", buf); break;
-        default: ESP_LOGV(TWAI_LOG_TAG, "%s", buf); break;
-    }
-
-    // dump message payload bytes
-    ESP_LOG_BUFFER_HEXDUMP(TWAI_LOG_TAG, &twaiMsg->data[0], twaiMsg->data_length_code, errLevel);
-}
-
 
 /****************************************************************
  * * RGB LED control task
@@ -721,7 +591,7 @@ void ledTask(void *ignore) {
 
     // configure RMT peripheral
     rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_FP2S2_RGB_GPIO, RMT_LED_CHANNEL);
-    config.clk_div = 2;
+    config.clk_div      = 2;
     ESP_ERROR_CHECK(rmt_config(&config));
     ESP_LOGV(LED_TASK_TAG, "RMT driver configured");
     ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));

@@ -1,9 +1,14 @@
+#pragma once
 /* flatpack2.h  */
-#ifndef FLATPACK2_H_
-#define FLATPACK2_H_
 
-// need the twai_message_t
-#include "driver/twai.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// need the twai_message_t and esp_log funcs
+#include "hal/twai_types.h"
+#include <esp_log.h>
 
 // default PSU ID to assign a PSU
 #define FP2_ID_DEFAULT 0x01
@@ -93,7 +98,7 @@ typedef struct {
     uint8_t        serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
     uint8_t        id;        //< PSU's chosen/assigned ID number, 0x04-0x3F
     uint32_t       cmd_id;    //< PSU's command ID number, ID left-shifted by 18 bits
-    uint32_t          in_volts; //< current input voltage
+    uint32_t       in_volts;  //< current input voltage
     float          out_volts;
     float          out_amps;
     float          out_watts;
@@ -110,4 +115,22 @@ typedef enum {
     request_alerts,
 } twai_tx_action_t;
 
-#endif /* !FLATPACK2_H_ */
+
+extern const char *fp2_alerts0_str[];
+extern const char *fp2_alerts1_str[];
+extern const char *FP2_STATUS_TAG;
+extern const char *FP2_ALERT_TAG;
+extern const char *FP2_LOGIN_TAG;
+
+/**
+ * Function declarations
+ */
+
+// process status message
+void processFp2Status(twai_message_t *rxMsg, flatpack2_t *psu);
+
+// process alert message
+void processFp2Alert(twai_message_t *rxMsg);
+
+// update saved details
+void updateFp2Details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq);
