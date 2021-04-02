@@ -58,9 +58,9 @@
 // lvgl graphics library
 #include "lvgl.h"
 #include "lvgl_helpers.h"
-
-// gpiodev
+// gpiodev and theme
 #include "lvgl_gpiodev.h"
+#include "lv_theme_fp2.h"
 
 // Extra project source files (helper functions etc.)
 #include "helpers.h"
@@ -153,8 +153,12 @@ static float esp_internal_temp;
 // fp2 object
 static flatpack2_t fp2;
 
-// lvgl gpio indev
+// lvgl objects
 static lv_indev_t *gpio_indev;
+static lv_obj_t *  scr_def;
+static lv_obj_t *  scr_status;
+static lv_obj_t *  vout_gauge;
+
 
 // setpoints
 static uint32_t set_voltage; // desired setpoint voltage
@@ -179,6 +183,7 @@ static void twaiTxTask(void *ignore);
 // Functions
 static void lvAppCreate(void);
 static void initialiseConsole(void);
+static void lv_fp2_val_update(lv_task_t *task);
 
 // Callbacks
 static void cb_netConnected(void *ignore);
@@ -211,7 +216,7 @@ void app_main(void) {
     //* Create OLED display task
     xLvglMutex = xSemaphoreCreateMutex();
     assert(xLvglMutex != NULL);
-    // xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
 
     //* Create TWAI setup task
     xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 8, NULL, 6, NULL);
@@ -280,12 +285,11 @@ static void displayTask(void *ignore) {
     ESP_ERROR_CHECK(esp_timer_create(&lvgl_timer_args, &lvgl_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_timer, LV_TICK_PERIOD_MS * 1000));
 
-    // set up initial screen state
+    // set up LVGL app
     lvAppCreate();
 
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
-
 
     // run lv_task_handler loop
     uint32_t lv_delay;
@@ -326,30 +330,57 @@ void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const cha
 static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
+    //lv_theme_t * fp2_theme = lv_theme_fp2_init();
+
     // get app data
     const esp_app_desc_t *app_info = esp_ota_get_app_description();
 
+    // Get current/default screen
+    scr_def = lv_disp_get_scr_act(NULL);
 
-
-    /* Get the current screen */
-    lv_obj_t *scr_def        = lv_disp_get_scr_act(NULL);
-    lv_obj_t *scr_fp2_status = lv_obj_create(NULL, NULL);
-
-    /*Create a Label on the currently active screen*/
+    // Create project name label
     lv_obj_t *app_name = lv_label_create(scr_def, NULL);
     lv_label_set_text(app_name, app_info->project_name);
     lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
 
-    /* create spinny loading icon thing */
+    // create spinny loading icon
     lv_obj_t *load_spinner = lv_spinner_create(scr_def, NULL);
     lv_obj_set_size(load_spinner, 90, 90);
     lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -5);
     lv_spinner_set_type(load_spinner, LV_SPINNER_TYPE_CONSTANT_ARC);
 
-    // lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -8);
-    lv_obj_set_style_local_line_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
-    lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
-    lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, 0);
+    // Get rid of annoying border around spinny loading icon
+    lv_obj_set_style_local_line_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+    lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+    lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+
+    // create status screen
+    scr_status = lv_obj_create(NULL, NULL);
+
+    // put volt gauge on it
+    static lv_color_t needle_colors[1];
+    needle_colors[0] = lv_color_hex(0xffffff);
+
+    vout_gauge = lv_gauge_create(scr_status, NULL);
+    lv_gauge_set_needle_count(vout_gauge, 1, needle_colors);
+    lv_gauge_set_range(vout_gauge, 234, 13);
+
+    lv_obj_set_style_local_line_opa(vout_gauge, LV_GAUGE_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+    //lv_obj_set_style_local_bg_opa(vout_gauge, LV_GAUGE_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+    lv_obj_set_style_local_border_opa(vout_gauge, LV_GAUGE_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+
+    lv_obj_set_size(vout_gauge, 64, 64);
+    lv_obj_align(vout_gauge, NULL, LV_ALIGN_CENTER, 0, 0);
+
+    // set up fp2 value update lvgl task
+    lv_task_t * lv_fp2_task = lv_task_create(lv_fp2_val_update, 500, LV_TASK_PRIO_MID, NULL);
+
+    // switch to the new screen, for testing, because EFFORT
+    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
+}
+
+void lv_fp2_val_update(lv_task_t *task) {
+    lv_gauge_set_value(vout_gauge, 1, (uint16_t)(fp2.out_volts * 100));
 }
 
 
