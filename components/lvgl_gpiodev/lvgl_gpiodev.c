@@ -75,7 +75,8 @@ static uint32_t gpio_to_keycode(uint32_t io_num) {
 
 bool lvgl_gpiodev_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     (void)drv;
-    if (gpio_get_level(last_gpio) == 0) {
+    int level = gpio_get_level(last_gpio)
+    if (level == 0) {
         data->state = LV_INDEV_STATE_PR;
     } else {
         data->state = LV_INDEV_STATE_REL;
