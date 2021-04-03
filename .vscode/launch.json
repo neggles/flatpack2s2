@@ -8,6 +8,7 @@
             "type": "espidf",
             "name": "Launch",
             "request": "launch",
+            "logLevel": 2,
         }
     ]
 }

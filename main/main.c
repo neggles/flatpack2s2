@@ -22,15 +22,18 @@
 #include "freertos/task.h"
 
 // ESP-IDF components
-#include <esp_err.h>
-#include <esp_event.h>
-#include <esp_freertos_hooks.h>
-#include <esp_log.h>
-#include <esp_netif.h>
-#include <esp_ota_ops.h>
-#include <esp_sntp.h>
-#include <esp_system.h>
-#include <esp_wifi.h>
+#include "esp_err.h"
+#include "esp_event.h"
+#include "esp_freertos_hooks.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_smartconfig.h"
+#include "esp_sntp.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_wpa2.h"
+#include "nvs_flash.h"
 
 // ESP-IDF drivers
 #include "driver/gpio.h"
@@ -38,8 +41,6 @@
 #include "driver/rmt.h"
 #include "driver/temp_sensor.h"
 #include "driver/twai.h"
-#include "nvs.h"
-#include "nvs_flash.h"
 #include "soc/rtc.h"
 
 // * --------------------------- Project components ------------------------- */
@@ -59,8 +60,11 @@
 #include "lvgl.h"
 #include "lvgl_helpers.h"
 // gpiodev and theme
-#include "lvgl_gpiodev.h"
 #include "lv_theme_fp2.h"
+#include "lvgl_gpiodev.h"
+
+// ESP Wifi Manager
+#include "wifi_manager.h"
 
 // Extra project source files (helper functions etc.)
 #include "helpers.h"
@@ -90,8 +94,7 @@
 #define ESP_TEMP_POLL_SEC 10
 
 // lvgl task handler interval and tick update interval
-#define LV_TICK_PERIOD_MS 5
-#define LV_TASK_PERIOD_MS 20
+#define LV_TASK_PERIOD_MS 15
 
 // LVGL indev pin definitions
 static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
@@ -110,6 +113,7 @@ static const char *TWAI_CTRL_TASK_TAG = "twai.Ctrl";
 static const char *TWAI_TX_TASK_TAG   = "twai.Tx";
 static const char *TWAI_RX_TASK_TAG   = "twai.Rx";
 static const char *TWAI_MSG_LOG_TAG   = "twai.Msg";
+static const char *TIMESYNC_TASK_TAG  = "sntp";
 
 
 // * Flatpack2-related Constants
@@ -128,19 +132,20 @@ static const int DISP_RUN_BIT       = BIT0;
 static const int TWAI_CTRL_RUN_BIT  = BIT1;
 static const int TWAI_RX_RUN_BIT    = BIT2;
 static const int TWAI_TX_RUN_BIT    = BIT3;
+static const int CONSOLE_RUN_BIT    = BIT4;
+static const int LED_RUN_BIT        = BIT5;
+static const int TEMP_RUN_BIT       = BIT6;
 static const int WIFI_CONNECTED_BIT = BIT10;
-static const int TIMESYNC_RUN_BIT   = BIT11;
-static const int TIME_VALID_BIT     = BIT12;
-static const int ESP_TEMP_RUN_BIT   = BIT13;
-static const int LED_RUN_BIT        = BIT14;
-static const int CONSOLE_RUN_BIT    = BIT15;
+static const int ESPTOUCH_DONE_BIT  = BIT11;
+static const int TIMESYNC_RUN_BIT   = BIT12;
+static const int TIME_VALID_BIT     = BIT13;
 
 
-// TWAI transmit task queue
+// Task Queues
 static QueueHandle_t xTwaiTxQueue;
 static QueueHandle_t xLedQueue;
 
-// lvgl driver mutex
+// LVGL-related
 static SemaphoreHandle_t xLvglMutex; // lvgl2 mutex
 
 
@@ -169,25 +174,27 @@ static uint32_t max_current; // Maximum current limit
 // * ---------------------- Static function prototypes ---------------------- */
 
 //  Persistent tasks
-static void displayTask(void *ignore);
-static void lvTickTimer(void *ignore);
 static void twaiCtrlTask(void *ignore);
 static void consoleTask(void *ignore);
+static void displayTask(void *ignore);
+static void lvTaskHandler(void *ignore);
 static void ledTask(void *ignore);
 static void tempSensorTask(void *ignore);
+static void timeSyncTask(void *ignore);
 
 // Non-persistent tasks
 static void twaiRxTask(void *ignore);
 static void twaiTxTask(void *ignore);
+static void smartConfigTask(void *ignore);
 
 // Functions
-static void lvAppCreate(void);
+static void wifi_init(void);
 static void initialiseConsole(void);
+static void lvAppCreate(void);
 static void lv_fp2_val_update(lv_task_t *task);
 
 // Callbacks
-static void cb_netConnected(void *ignore);
-static void cb_netDisconnected(void *ignore);
+static void scEventHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void cb_timeSyncEvent(struct timeval *tv);
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 
@@ -209,27 +216,52 @@ void app_main(void) {
     //* initialise the main app event group
     appEventGroup = xEventGroupCreate();
 
+    //* initialize NVS and start the wifi setup process
+    //ESP_ERROR_CHECK(nvs_flash_init());
+    //wifi_init();
+
     //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "consoleTask", 1024 * 8, NULL, 6, NULL);
+    initialiseConsole();
+    esp_console_register_help_command();
+    register_system_common();
+    xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 6, NULL);
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create OLED display task
     xLvglMutex = xSemaphoreCreateMutex();
     assert(xLvglMutex != NULL);
-    xTaskCreate(&displayTask, "display", 1024 * 16, NULL, 10, NULL);
+
+    // spawn task
+    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 8, NULL);
+    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create TWAI setup task
-    xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 8, NULL, 6, NULL);
+    xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
+    xEventGroupWaitBits(appEventGroup, (TWAI_CTRL_RUN_BIT | TWAI_TX_RUN_BIT | TWAI_RX_RUN_BIT), pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create RGB LED update task
-    xLedQueue = xQueueCreate(10, sizeof(led_hsv_t));
+    xLedQueue = xQueueCreate(3, sizeof(hsv_t));
     assert(xLedQueue != NULL);
-    xTaskCreate(&ledTask, "ledTask", 1024 * 4, NULL, 3, NULL);
+    hsv_t led_initial = {
+        .hue = 0,
+        .sat = 100,
+        .val = 50,
+    };
+    xQueueSend(xLedQueue, &led_initial, 0);
+    xTaskCreate(&ledTask, "ledTask", 1024 * 2, NULL, 3, NULL);
+    xEventGroupWaitBits(appEventGroup, LED_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create temp sensor polling task
-    xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 4, NULL, tskIDLE_PRIORITY, NULL);
-}
+    xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
+    xEventGroupWaitBits(appEventGroup, TEMP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
+    //* init wifi manager, register callbacks
+    // wrapping the stupid thing in delays seems to make it happier? idfk, there's something fucky going on with lvgl here
+    // wifi_manager_start();
+
+    //* Create SNTP management task
+    xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
+}
 
 /****************************************************************
  * * lvgl display management
@@ -237,24 +269,28 @@ void app_main(void) {
 static void displayTask(void *ignore) {
     ESP_LOGI(DISP_TASK_TAG, "display task begin");
 
+    // initialize LVGL itself + the ESP32 driver components
     lv_init();
     lvgl_driver_init();
     lvgl_gpiodev_init();
 
     /**
-     * configure for B&W OLED
-     * NOTE: buf2 == NULL when using monochrome displays.
-     * NOTE: When using a monochrome display we need to register two extra callbacks;
-     *        - rounder_cb
-     *        - set_px_cb
+     * Configure LVGL display and input devices
+     *
+     * NOTE: When using a monochrome display:
+     *      - No double-buffering, so buf2 == NULL
+     *      - We need two extra callbacks:
+     *          - rounder_cb
+     *          - set_px_cb
+     *      - Normally size_in_px = DISP_BUF_SIZE, but this display is 1BPP,
+     *        so size_in_px = DISP_BUF_SIZE * 8
      */
     // create display buffer
     lv_color_t *buf1 = heap_caps_malloc(DISP_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
     assert(buf1 != NULL);
     static lv_color_t *  buf2 = NULL;
     static lv_disp_buf_t disp_buf;
-    /* Actual size in pixels, not bytes. */
-    uint32_t size_in_px = DISP_BUF_SIZE * 8;
+    uint32_t             size_in_px = DISP_BUF_SIZE * 8;
 
     // initialize display driver
     lv_disp_buf_init(&disp_buf, buf1, buf2, size_in_px);
@@ -274,34 +310,17 @@ static void displayTask(void *ignore) {
     lv_gpiodev.read_cb = lvgl_gpiodev_read;
     gpio_indev         = lv_indev_drv_register(&lv_gpiodev);
 
-    /* Create and start a periodic timer interrupt to call lv_tick_inc from lvTickTimer() */
-    const esp_timer_create_args_t lvgl_timer_args = {
-        .callback = &lvTickTimer,
-        .name     = "lvglTick",
-        //         .dispatch_method       = ESP_TIMER_ISR, // doesn't work on IDF 4.3 :(
-        .skip_unhandled_events = 1,
-    };
-    esp_timer_handle_t lvgl_timer;
-    ESP_ERROR_CHECK(esp_timer_create(&lvgl_timer_args, &lvgl_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_timer, LV_TICK_PERIOD_MS * 1000));
-
     // set up LVGL app
     lvAppCreate();
+
+    // start handler task
+    xTaskCreate(&lvTaskHandler, "lvgl.handler", 1024 * 2, NULL, 6, NULL);
 
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
 
-    // run lv_task_handler loop
-    uint32_t lv_delay;
     while (true) {
-        lv_delay = 10;
-        // Try to take the semaphore, call lvgl task handler on success
-        if (pdTRUE == xSemaphoreTake(xLvglMutex, pdMS_TO_TICKS(lv_delay) / 2)) {
-            lv_delay = lv_task_handler();
-            xSemaphoreGive(xLvglMutex);
-        }
-        // wait for next interval
-        vTaskDelay(pdMS_TO_TICKS(lv_delay));
+        vTaskDelay(portMAX_DELAY);
     }
 
     /* A task should NEVER return */
@@ -309,20 +328,19 @@ static void displayTask(void *ignore) {
     vTaskDelete(NULL);
 }
 
-// lvgl tick timer callback
-static void lvTickTimer(void *ignore) {
-    lv_tick_inc(LV_TICK_PERIOD_MS);
-}
-
-// lvgl log callback
-void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
-    // use ESP_LOGx macros
-    switch (level) {
-        case LV_LOG_LEVEL_INFO: ESP_LOGI(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
-        case LV_LOG_LEVEL_WARN: ESP_LOGW(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
-        case LV_LOG_LEVEL_ERROR: ESP_LOGE(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
-        case LV_LOG_LEVEL_TRACE: ESP_LOGV(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
-        default: ESP_LOGV(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
+// putting this in its own stupid thing
+static void lvTaskHandler(void *ignore) {
+    uint32_t lv_delay;
+    while (true) {
+        lv_delay = LV_TASK_PERIOD_MS;
+        // try to take the semaphore
+        if (pdTRUE == xSemaphoreTake(xLvglMutex, pdMS_TO_TICKS(lv_delay / 2))) {
+            // run LVGL task handler - returns required delay before running again
+            lv_delay = lv_task_handler();
+            xSemaphoreGive(xLvglMutex);
+        }
+        // wait for next interval
+        vTaskDelay(pdMS_TO_TICKS(lv_delay));
     }
 }
 
@@ -330,7 +348,7 @@ void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const cha
 static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
-    //lv_theme_t * fp2_theme = lv_theme_fp2_init();
+    // lv_theme_t * fp2_theme = lv_theme_fp2_init();
 
     // get app data
     const esp_app_desc_t *app_info = esp_ota_get_app_description();
@@ -355,32 +373,31 @@ static void lvAppCreate(void) {
     lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
 
     // create status screen
-    scr_status = lv_obj_create(NULL, NULL);
-
-    // put volt gauge on it
-    static lv_color_t needle_colors[1];
-    needle_colors[0] = lv_color_hex(0xffffff);
-
-    vout_gauge = lv_gauge_create(scr_status, NULL);
-    lv_gauge_set_needle_count(vout_gauge, 1, needle_colors);
-    lv_gauge_set_range(vout_gauge, 234, 13);
-
-    lv_obj_set_style_local_line_opa(vout_gauge, LV_GAUGE_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
-    //lv_obj_set_style_local_bg_opa(vout_gauge, LV_GAUGE_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
-    lv_obj_set_style_local_border_opa(vout_gauge, LV_GAUGE_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
-
-    lv_obj_set_size(vout_gauge, 64, 64);
-    lv_obj_align(vout_gauge, NULL, LV_ALIGN_CENTER, 0, 0);
+    //    scr_status = lv_obj_create(NULL, NULL);
 
     // set up fp2 value update lvgl task
-    lv_task_t * lv_fp2_task = lv_task_create(lv_fp2_val_update, 500, LV_TASK_PRIO_MID, NULL);
+    //    lv_task_t *lv_fp2_task = lv_task_create(lv_fp2_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
     // switch to the new screen, for testing, because EFFORT
-    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
+    // lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
 }
 
+/*
+// lvgl event callbacks
 void lv_fp2_val_update(lv_task_t *task) {
     lv_gauge_set_value(vout_gauge, 1, (uint16_t)(fp2.out_volts * 100));
+}
+*/
+// lvgl log callback
+void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
+    // use ESP_LOGx macros
+    switch (level) {
+        case LV_LOG_LEVEL_INFO: ESP_LOGI(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
+        case LV_LOG_LEVEL_WARN: ESP_LOGW(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
+        case LV_LOG_LEVEL_ERROR: ESP_LOGE(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
+        case LV_LOG_LEVEL_TRACE: ESP_LOGV(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
+        default: ESP_LOGV(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
+    }
 }
 
 
@@ -429,8 +446,15 @@ void twaiCtrlTask(void *ignore) {
     ESP_LOGD(TWAI_CTRL_TASK_TAG, "Driver started");
 
     // reconfigure TWAI alerts
+    // enable logging, unless TWAI ISR is in IRAM in which case it doesn't work anyway
+#ifdef CONFIG_TWAI_ISR_IN_IRAM
+    uint32_t fp2_twai_a_config = (TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_ABOVE_ERR_WARN |
+                                  TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
+#else
     uint32_t fp2_twai_a_config = (TWAI_ALERT_AND_LOG | TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL |
                                   TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
+#endif // CONFIG_TWAI_ISR_IN_IRAM
+
     twai_reconfigure_alerts(fp2_twai_a_config, NULL);
     ESP_LOGD(TWAI_CTRL_TASK_TAG, "Alert configuration set");
 
@@ -482,6 +506,7 @@ void twaiCtrlTask(void *ignore) {
             if (alerts & TWAI_ALERT_BUS_RECOVERED) {
                 ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] Bus recovery complete! Restarting driver");
                 for (int i = 0; i < 3; i++) {
+                    twai_reconfigure_alerts(fp2_twai_a_config, NULL);
                     esp_err_t err = twai_start();
                     if (err == ESP_OK) {
                         ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] TWAI recovery complete! Resuming tx/rx tasks");
@@ -616,6 +641,7 @@ void ledTask(void *ignore) {
     ESP_LOGI(LED_TASK_TAG, "initializing RGB LED");
 
     // local RGB value variables
+    hsv_t    hsv;
     uint32_t red   = 0;
     uint32_t green = 0;
     uint32_t blue  = 0;
@@ -644,24 +670,154 @@ void ledTask(void *ignore) {
     TickType_t       xLastWakeTime = xTaskGetTickCount();
     const TickType_t xTaskInterval = pdMS_TO_TICKS(1000 / LED_UPDATE_RATE_HZ);
 
-    // this is a placeholder that just does a rainbow cycle until I have this actually set up
-    led_hsv_t hsv_val;
+    xEventGroupSetBits(appEventGroup, LED_RUN_BIT);
+
+    // get me requested LED state and display it
+    // TODO: replace this with something using an effects library probably
     while (true) {
-        xQueueReceive(xLedQueue, &hsv_val, 0);
-        for (int i = 0; i < 360; i++) {
-            // build RGB value
-            led_hsv2rgb(i, 100, 30, &red, &green, &blue);
-            rgb_led->set_pixel(rgb_led, 0, red, green, blue);
-            // Flush RGB value to LED
-            rgb_led->refresh(rgb_led, 100);
-            // wait for next interval
-            vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
-        }
+        xQueueReceive(xLedQueue, &hsv, portMAX_DELAY);
+        hsv2rgb(hsv, &red, &green, &blue);
+        rgb_led->set_pixel(rgb_led, 0, red, green, blue);
+        rgb_led->refresh(rgb_led, 100);
+        vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
     }
 
     // should never execute
     vQueueDelete(xLedQueue);
     vTaskDelete(NULL);
+}
+
+
+/****************************************************************
+ * * Wifi Provisioning Task
+ */
+static void smartConfigTask(void *ignore) {
+    EventBits_t uxBits;
+    ESP_ERROR_CHECK(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
+    smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_smartconfig_start(&cfg));
+    while (1) {
+        uxBits = xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
+        if (uxBits & WIFI_CONNECTED_BIT) {
+            ESP_LOGI(TAG, "WiFi Connected");
+        }
+        if (uxBits & ESPTOUCH_DONE_BIT) {
+            ESP_LOGI(TAG, "SmartConfig Done");
+            esp_smartconfig_stop();
+            vTaskDelete(NULL);
+        }
+    }
+}
+
+static void wifi_init(void) {
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &scEventHandler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &scEventHandler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &scEventHandler, NULL));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+}
+
+static void scEventHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        xTaskCreate(smartConfigTask, "smartconfig", 1024 * 4, NULL, 3, NULL);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+        xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SCAN_DONE) {
+        ESP_LOGI(TAG, "Scan done");
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_FOUND_CHANNEL) {
+        ESP_LOGI(TAG, "Found channel");
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD) {
+        ESP_LOGI(TAG, "Got SSID and password");
+
+        smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
+        wifi_config_t                      wifi_config;
+        uint8_t                            ssid[33]     = {0};
+        uint8_t                            password[65] = {0};
+        uint8_t                            rvd_data[33] = {0};
+
+        bzero(&wifi_config, sizeof(wifi_config_t));
+        memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
+        memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
+        wifi_config.sta.bssid_set = evt->bssid_set;
+        if (wifi_config.sta.bssid_set == true) {
+            memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
+        }
+
+        memcpy(ssid, evt->ssid, sizeof(evt->ssid));
+        memcpy(password, evt->password, sizeof(evt->password));
+        ESP_LOGI(TAG, "SSID:%s", ssid);
+        ESP_LOGI(TAG, "PASSWORD:%s", password);
+        if (evt->type == SC_TYPE_ESPTOUCH_V2) {
+            ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
+            ESP_LOGI(TAG, "RVD_DATA:");
+            for (int i = 0; i < 33; i++) {
+                printf("%02x ", rvd_data[i]);
+            }
+            printf("\n");
+        }
+
+        ESP_ERROR_CHECK(esp_wifi_disconnect());
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+        esp_wifi_connect();
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE) {
+        xEventGroupSetBits(appEventGroup, ESPTOUCH_DONE_BIT);
+    }
+}
+
+
+/****************************************************************
+ * * SNTP time sync setup task
+ * TODO: Maybe pick up SNTP from DHCP?
+ */
+void timeSyncTask(void *ignore) {
+    ESP_LOGI(TIMESYNC_TASK_TAG, "sntp task starting");
+
+    //* Set time zone and SNTP operating parameters
+    setenv("TZ", POSIX_TZ, 1);
+    tzset();
+
+    // wait for wifi connected bit in event group
+    ESP_LOGI(TIMESYNC_TASK_TAG, "TZ set, waiting for wifi");
+    xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    // configure ant start SNTP
+    ESP_LOGI(TIMESYNC_TASK_TAG, "Starting sntp service");
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, CONFIG_SNTP_SERVER);
+    sntp_set_time_sync_notification_cb(cb_timeSyncEvent);
+    sntp_init();
+
+    ESP_LOGI(TIMESYNC_TASK_TAG, "Waiting for system time to be set...");
+    xEventGroupWaitBits(appEventGroup, TIMESYNC_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    ESP_LOGI(TIMESYNC_TASK_TAG, "System time set, exiting");
+    vTaskDelete(NULL);
+}
+
+// sntp event callback
+void cb_timeSyncEvent(struct timeval *tv) {
+    ESP_LOGI(TIMESYNC_TASK_TAG, "SNTP sync event notification");
+
+    if ((xEventGroupGetBits(appEventGroup) & BIT1) == 0) xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
+
+    char      strftime_sntp[64];
+    time_t    sntp     = (time_t)tv->tv_sec;
+    struct tm sntpinfo = {0};
+    localtime_r(&sntp, &sntpinfo);
+    strftime(strftime_sntp, sizeof(strftime_sntp), "%c", &sntpinfo);
+    ESP_LOGI(TIMESYNC_TASK_TAG, "received date/time: %s", strftime_sntp);
 }
 
 
@@ -681,7 +837,7 @@ void tempSensorTask(void *ignore) {
 
     // get current temp and store in global
     temp_sensor_read_celsius(&esp_internal_temp);
-    xEventGroupSetBits(appEventGroup, ESP_TEMP_RUN_BIT);
+    xEventGroupSetBits(appEventGroup, TEMP_RUN_BIT);
     ESP_LOGI(TEMP_TASK_TAG, "current chip temp %.3f°C", esp_internal_temp);
 
     // initialise task handler delay loop
@@ -696,7 +852,7 @@ void tempSensorTask(void *ignore) {
         ESP_LOGD(TEMP_TASK_TAG, "current chip temp %.3f°C", esp_internal_temp);
     }
 
-    xEventGroupClearBits(appEventGroup, ESP_TEMP_RUN_BIT);
+    xEventGroupClearBits(appEventGroup, TEMP_RUN_BIT);
     vTaskDelete(NULL);
 }
 
@@ -705,25 +861,12 @@ void tempSensorTask(void *ignore) {
  * * Command line console task
  */
 void consoleTask(void *ignore) {
-    //* initialise console
-    initialiseConsole();
-    /* Register commands */
-    esp_console_register_help_command();
-    register_system_common();
-    // register_system_sleep();
-    // register_nvs();
 
     /**
      * Prompt to be printed before each line.
      * This can be customized, made dynamic, etc.
      */
     const char *prompt = LOG_COLOR(LOG_COLOR_PURPLE) "flatpack2s2> " LOG_RESET_COLOR;
-
-    printf("\n"
-           "Welcome to flatpack2s2.\n"
-           "Type 'help' to get the list of commands.\n"
-           "Use UP/DOWN arrows to navigate through command history.\n"
-           "Press TAB when typing command name to auto-complete.\n");
 
     // Figure out if the terminal supports escape sequences
     int probe_status = linenoiseProbe();

@@ -8,7 +8,11 @@ static const char *TWAI_MSG_LOG_TAG = "twai.Msg";
 /**
  * @brief Simple helper function, converting HSV color space to RGB color space
  */
-void led_hsv2rgb(uint32_t h, uint32_t s, uint32_t v, uint32_t *r, uint32_t *g, uint32_t *b) {
+void hsv2rgb(hsv_t hsv, uint32_t *r, uint32_t *g, uint32_t *b) {
+    uint32_t h = hsv.hue;
+    uint32_t s = hsv.sat;
+    uint32_t v = hsv.val;
+
     h %= 360; // h -> [0,360]
     uint32_t rgb_max = v * 2.55f;
     uint32_t rgb_min = rgb_max * (100 - s) / 100.0f;
