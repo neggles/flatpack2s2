@@ -1,0 +1,35 @@
+name: esp-idf-stable-build
+on:
+  push:
+    branches:
+      - master
+      - 'release/**'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # checkout repo
+      - name: Checkout and recurse submodules
+        id: checkout-recursive
+        uses: actions/checkout@v2
+        with:
+          submodules: 'recursive'
+
+      # copy sdkconfig.s2usb to sdkconfig
+      - name: Copy sdkconfig
+        id: copy-sdkconfig
+        run: cp sdkconfig.s2usb sdkconfig
+
+      # run build of project in latest esp-idf container
+      - name: ESP-IDF Build
+        id: esp-idf-build
+        uses: CalinRadoni/esp-idf-v4-container-action@v4.2
+
+      # copy the build exit code to the job exit code
+      - name: Set exit code
+        run: exit ${{ steps.esp-idf-build.outputs.result }}
