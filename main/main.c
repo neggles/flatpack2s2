@@ -53,8 +53,8 @@
 #include "esp_vfs_cdcacm.h"
 #include "linenoise/linenoise.h"
 
-// RGB LED strip driver (using RMT peripheral)
-#include "led_strip.h"
+// RGB LED driver (using RMT peripheral)
+#include "ws2812_led.h"
 
 // lvgl graphics library
 #include "lvgl.h"
@@ -677,45 +677,26 @@ void twaiRxTask(void *ignore) {
 void ledTask(void *ignore) {
     ESP_LOGI(LED_TASK_TAG, "initializing RGB LED");
 
-    // local RGB value variables
-    hsv_t    hsv;
-    uint32_t red   = 0;
-    uint32_t green = 0;
-    uint32_t blue  = 0;
+    hsv_t hsv;
 
-    // configure RMT peripheral
-    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_FP2S2_RGB_GPIO, RMT_LED_CHANNEL);
-    config.clk_div      = 2;
-    ESP_ERROR_CHECK(rmt_config(&config));
-    ESP_LOGV(LED_TASK_TAG, "RMT driver configured");
-    ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));
-    ESP_LOGV(LED_TASK_TAG, "RMT driver installed");
-
-    // install ws2812 driver
-    led_strip_config_t led_config = LED_STRIP_DEFAULT_CONFIG(1, (led_strip_dev_t)config.channel);
-    led_strip_t *      rgb_led    = led_strip_new_rmt_ws2812(&led_config);
-    if (!rgb_led) {
-        ESP_LOGE(LED_TASK_TAG, "initialization failed! giving up...");
-        vTaskDelete(NULL);
-    }
+    // do init
+    led_init();
 
     // turn off LED
-    ESP_ERROR_CHECK(rgb_led->clear(rgb_led, 100));
-    ESP_LOGI(LED_TASK_TAG, "initialization complete");
+    led_clear();
 
     // initialise task handler delay loop
     TickType_t       xLastWakeTime = xTaskGetTickCount();
     const TickType_t xTaskInterval = pdMS_TO_TICKS(1000 / LED_UPDATE_RATE_HZ);
 
+    ESP_LOGI(LED_TASK_TAG, "initialization complete");
     xEventGroupSetBits(appEventGroup, LED_RUN_BIT);
 
     // get me requested LED state and display it
     // TODO: replace this with something using an effects library probably
     while (true) {
         xQueueReceive(xLedQueue, &hsv, portMAX_DELAY);
-        hsv2rgb(hsv, &red, &green, &blue);
-        rgb_led->set_pixel(rgb_led, 0, red, green, blue);
-        rgb_led->refresh(rgb_led, 100);
+        led_set_hsv(hsv.hue, hsv.sat, hsv.val);
         vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
     }
 
