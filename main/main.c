@@ -162,8 +162,18 @@ static flatpack2_t fp2;
 static lv_indev_t *gpio_indev;
 static lv_obj_t *  scr_def;
 static lv_obj_t *  scr_status;
-static lv_obj_t *  vout_gauge;
+static lv_obj_t *  lv_tile_output;
+static lv_obj_t *  lv_tile_status;
+static lv_obj_t *  lv_tile_vars;
+static lv_obj_t *  lv_vin;
+static lv_obj_t *  lv_vout;
+static lv_obj_t *  lv_iout;
+static lv_obj_t *  lv_wout;
+static lv_obj_t *  lv_temp;
+static lv_obj_t *  app_name;
+static lv_obj_t *  load_spinner;
 
+static lv_obj_t *lv_tileview;
 
 // setpoints
 static uint32_t set_voltage; // desired setpoint voltage
@@ -191,7 +201,7 @@ static void smartConfigTask(void *ignore);
 static void wifi_init(void);
 static void initialiseConsole(void);
 static void lvAppCreate(void);
-static void lv_fp2_val_update(lv_task_t *task);
+static void lv_val_update(lv_task_t *task);
 
 // Callbacks
 static void scEventHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
@@ -217,8 +227,8 @@ void app_main(void) {
     appEventGroup = xEventGroupCreate();
 
     //* initialize NVS and start the wifi setup process
-    //ESP_ERROR_CHECK(nvs_flash_init());
-    //wifi_init();
+    ESP_ERROR_CHECK(nvs_flash_init());
+    // wifi_init();
 
     //* start the command-line console task and wait for init
     initialiseConsole();
@@ -232,7 +242,7 @@ void app_main(void) {
     assert(xLvglMutex != NULL);
 
     // spawn task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 8, NULL);
+    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 15, NULL);
     xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create TWAI setup task
@@ -314,7 +324,7 @@ static void displayTask(void *ignore) {
     lvAppCreate();
 
     // start handler task
-    xTaskCreate(&lvTaskHandler, "lvgl.handler", 1024 * 2, NULL, 6, NULL);
+    xTaskCreate(&lvTaskHandler, "lvgl.handler", 1024 * 2, NULL, 15, NULL);
 
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
@@ -355,39 +365,66 @@ static void lvAppCreate(void) {
 
     // Get current/default screen
     scr_def = lv_disp_get_scr_act(NULL);
-
     // Create project name label
-    lv_obj_t *app_name = lv_label_create(scr_def, NULL);
+    app_name = lv_label_create(scr_def, NULL);
     lv_label_set_text(app_name, app_info->project_name);
     lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
-
     // create spinny loading icon
-    lv_obj_t *load_spinner = lv_spinner_create(scr_def, NULL);
+    load_spinner = lv_spinner_create(scr_def, NULL);
     lv_obj_set_size(load_spinner, 90, 90);
     lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -5);
     lv_spinner_set_type(load_spinner, LV_SPINNER_TYPE_CONSTANT_ARC);
-
     // Get rid of annoying border around spinny loading icon
     lv_obj_set_style_local_line_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
     lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
     lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
 
+
     // create status screen
-    //    scr_status = lv_obj_create(NULL, NULL);
+    scr_status  = lv_obj_create(NULL, NULL);
+    lv_tileview = lv_tileview_create(scr_status, NULL);
+    // valid position grid
+    static lv_point_t lv_tiles[] = {{0, 0}, {1, 0}, {2, 0}};
+
+    lv_tileview_set_valid_positions(lv_tileview, lv_tiles, 3);
+    lv_tileview_set_edge_flash(lv_tileview, true);
+    lv_page_set_scrollbar_mode(lv_tileview, LV_SCRLBAR_MODE_OFF);
+
+    // tile 1: output voltage, current, watts
+    lv_tile_output = lv_obj_create(lv_tileview, NULL);
+    lv_obj_set_size(lv_tile_output, LV_HOR_RES, LV_VER_RES);
+    lv_tileview_add_element(lv_tileview, lv_tile_output);
+
+    // tile_status: input voltage, temps, status code
+    lv_tile_status = lv_obj_create(lv_tileview, NULL);
+    lv_obj_set_size(lv_tile_status, LV_HOR_RES, LV_VER_RES);
+    lv_tileview_add_element(lv_tileview, lv_tile_status);
+
+    // tile_vars: all available status values, in a list
+    lv_tile_vars = lv_list_create(lv_tileview, NULL);
+    lv_obj_set_size(lv_tile_vars, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(lv_tile_vars, 0, LV_VER_RES);
+    lv_list_set_scroll_propagation(lv_tile_vars, true);
+    lv_list_set_scrollbar_mode(lv_tile_vars, LV_SCROLLBAR_MODE_OFF);
+
 
     // set up fp2 value update lvgl task
-    //    lv_task_t *lv_fp2_task = lv_task_create(lv_fp2_val_update, 500, LV_TASK_PRIO_MID, NULL);
+    lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
     // switch to the new screen, for testing, because EFFORT
-    // lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
+    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
 }
 
-/*
+
 // lvgl event callbacks
-void lv_fp2_val_update(lv_task_t *task) {
-    lv_gauge_set_value(vout_gauge, 1, (uint16_t)(fp2.out_volts * 100));
+void lv_val_update(lv_task_t *task) {
+    lv_label_set_text_fmt(lv_vin, " Vin: %4dV", fp2.in_volts);
+    lv_label_set_text_fmt(lv_vout, "Vout: %4.1fV", fp2.out_volts);
+    lv_label_set_text_fmt(lv_iout, "Iout: %4.1fA", fp2.out_amps);
+    lv_label_set_text_fmt(lv_temp, "Temp: I %2d°C O %2d°C", fp2.temp_intake, fp2.temp_exhaust);
+    lv_label_set_text_fmt(lv_wout, "Wout: %4.1fW", fp2.out_watts);
 }
-*/
+
 // lvgl log callback
 void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
     // use ESP_LOGx macros
@@ -792,7 +829,7 @@ void timeSyncTask(void *ignore) {
     ESP_LOGI(TIMESYNC_TASK_TAG, "TZ set, waiting for wifi");
     xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    // configure ant start SNTP
+    // configure and start SNTP
     ESP_LOGI(TIMESYNC_TASK_TAG, "Starting sntp service");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, CONFIG_SNTP_SERVER);
@@ -810,7 +847,7 @@ void timeSyncTask(void *ignore) {
 void cb_timeSyncEvent(struct timeval *tv) {
     ESP_LOGI(TIMESYNC_TASK_TAG, "SNTP sync event notification");
 
-    if ((xEventGroupGetBits(appEventGroup) & BIT1) == 0) xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
+    if ((xEventGroupGetBits(appEventGroup) & TIMESYNC_RUN_BIT) == 0) xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
 
     char      strftime_sntp[64];
     time_t    sntp     = (time_t)tv->tv_sec;
