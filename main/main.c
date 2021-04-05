@@ -63,9 +63,6 @@
 #include "lv_theme_fp2.h"
 #include "lvgl_gpiodev.h"
 
-// ESP Wifi Manager
-#include "wifi_manager.h"
-
 // Extra project source files (helper functions etc.)
 #include "helpers.h"
 // flatpack2 helper functions and definitions
