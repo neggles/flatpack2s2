@@ -219,6 +219,7 @@ static void tempSensorTask(void *ignore);
 // Non-persistent tasks
 static void twaiRxTask(void *ignore);
 static void twaiTxTask(void *ignore);
+static void fp2CmdTask(void *ignore);
 
 // Functions
 static void initialiseConsole(void);
@@ -537,12 +538,16 @@ void twaiCtrlTask(void *ignore) {
 
     // create RX task
     TaskHandle_t rxTaskHandle;
-    xTaskCreate(&twaiRxTask, "twaiRxTask", 1024 * 8, &fp2, 4, &rxTaskHandle);
+    xTaskCreate(&twaiRxTask, "twaiRxTask", 1024 * 8, NULL, 4, &rxTaskHandle);
 
     // create TX task
     TaskHandle_t txTaskHandle;
     xTwaiTxQueue = xQueueCreate(10, sizeof(twai_message_t));
     xTaskCreate(&twaiTxTask, "twaiTxTask", 1024 * 8, NULL, 5, &txTaskHandle);
+
+    // create cmd task
+    TaskHandle_t cmdTaskHandle;
+    xTaskCreate(&fp2CmdTask, "fp2CmdTask", 1024 * 4, NULL, 4, &cmdTaskHandle);
 
     // handle alerts and print status
     while (true) {
@@ -665,7 +670,7 @@ void twaiRxTask(void *ignore) {
                     // send a login request
                     xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
                     // set FP2_FOUND_BIT
-                    xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
+                    // xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
                     msgProcessed = true;
                     break;
                 case (FP2_MSG_STATUS | 0x04): // 0x04 = CV / normal
@@ -710,7 +715,7 @@ void twaiRxTask(void *ignore) {
 
 void fp2CmdTask(void *ignore) {
     // wait until we've found the PSU
-    xEventGroupWaitBits(appEventGroup, FP2_FOUND_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    // xEventGroupWaitBits(appEventGroup, FP2_FOUND_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     while (true) {
         // wait for a set request, clear bit once we get it
         xEventGroupWaitBits(appEventGroup, FP2_SET_REQ_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
@@ -720,26 +725,27 @@ void fp2CmdTask(void *ignore) {
         txMsg.data_length_code = 8;
 
         // clamp max voltage/current setpoints to PSU capabilities from config
-        uint32_t vset_actual  = Clamp(fp2_vset, fp2_abs_vmax, fp2_abs_vmin);
-        uint32_t vmeas_actual = Clamp(fp2_vmeas, fp2_abs_vmax, fp2_abs_vmin);
-        uint32_t vovp_actual  = Clamp(fp2_vmax, fp2_abs_vmax, fp2_abs_vmin);
-        uint32_t imax_actual  = Clamp(fp2_iset, fp2_abs_imax, 1);
+        uint32_t vset_actual  = Clamp(fp2_vset, fp2_abs_vmin, fp2_abs_vmax);
+        uint32_t vmeas_actual = Clamp(fp2_vmeas, fp2_abs_vmin, fp2_abs_vmax);
+        uint32_t vovp_actual  = Clamp(fp2_vmax, fp2_abs_vmin, fp2_abs_vmax);
+        uint32_t iset_actual  = Clamp(fp2_iset, 1, fp2_abs_imax);
 
         // see docs/Protocol.md for more info
-        txMsg.data[0] = (fp2_iset >> 8) & 0xFF;
-        txMsg.data[1] = fp2_iset & 0xFF;
+        txMsg.data[0] = (uint8_t)iset_actual & 0xFF;
+        txMsg.data[1] = (iset_actual >> 8) & 0xFF;
 
-        txMsg.data[2] = (fp2_vmeas >> 8) & 0xFF;
-        txMsg.data[3] = fp2_vmeas & 0xFF;
+        txMsg.data[2] = vmeas_actual & 0xFF;
+        txMsg.data[3] = (vmeas_actual >> 8) & 0xFF;
 
-        txMsg.data[4] = (fp2_vset >> 8) & 0xFF;
-        txMsg.data[5] = fp2_vset & 0xFF;
+        txMsg.data[4] = vset_actual & 0xFF;
+        txMsg.data[5] = (vset_actual >> 8) & 0xFF;
 
-        txMsg.data[6] = (fp2_vmax >> 8) & 0xFF;
-        txMsg.data[7] = fp2_vmax & 0xFF;
+        txMsg.data[6] = vovp_actual & 0xFF;
+        txMsg.data[7] = (vovp_actual >> 8) & 0xFF;
 
-        ESP_LOGD(TWAI_CTRL_TASK_TAG, "Sending CMD_SET to PSU %2d: Vset %4d Vmeas %4d Vmax %4d Imax %4d", fp2.id,
-                 vset_actual, vmeas_actual, vovp_actual, imax_actual);
+        ESP_LOGI(TWAI_CTRL_TASK_TAG, "[TX][CMD_SET][0x%08x] PSU %02d: Vset %04d Vmeas %04d Vmax %04d Imax %04d",
+                 txMsg.identifier, fp2.id, vset_actual, vmeas_actual, vovp_actual, iset_actual);
+        logTwaiMsg(&txMsg, 1, "CMD_SET", ESP_LOG_INFO);
         xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
     }
 
