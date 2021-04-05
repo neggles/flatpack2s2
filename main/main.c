@@ -28,12 +28,16 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
-#include "esp_smartconfig.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_wpa2.h"
 #include "nvs_flash.h"
+
+// wifi prov mgmt
+#include "qrcode.h"
+#include "wifi_provisioning/manager.h"
+#include "wifi_provisioning/scheme_softap.h"
 
 // ESP-IDF drivers
 #include "driver/gpio.h"
@@ -93,6 +97,11 @@
 // lvgl task handler interval and tick update interval
 #define LV_TASK_PERIOD_MS 15
 
+// WiFi prov manager defines
+#define PROV_QR_VERSION       "v1"
+#define PROV_TRANSPORT_SOFTAP "softap"
+#define QRCODE_BASE_URL       "https://espressif.github.io/esp-jumpstart/qrcode.html"
+
 // LVGL indev pin definitions
 static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
 static const int btn_enter = CONFIG_FP2S2_SW_S_GPIO;
@@ -110,6 +119,7 @@ static const char *TWAI_CTRL_TASK_TAG = "twai.Ctrl";
 static const char *TWAI_TX_TASK_TAG   = "twai.Tx";
 static const char *TWAI_RX_TASK_TAG   = "twai.Rx";
 static const char *TWAI_MSG_LOG_TAG   = "twai.Msg";
+static const char *WIFI_TASK_TAG      = "wifiProv";
 static const char *TIMESYNC_TASK_TAG  = "sntp";
 
 
@@ -136,7 +146,7 @@ static const int WIFI_CONNECTED_BIT = BIT10;
 static const int ESPTOUCH_DONE_BIT  = BIT11;
 static const int TIMESYNC_RUN_BIT   = BIT12;
 static const int TIME_VALID_BIT     = BIT13;
-
+static const int FP2_FOUND_BIT      = BIT14;
 
 // Task Queues
 static QueueHandle_t xTwaiTxQueue;
@@ -192,16 +202,19 @@ static void timeSyncTask(void *ignore);
 // Non-persistent tasks
 static void twaiRxTask(void *ignore);
 static void twaiTxTask(void *ignore);
-static void smartConfigTask(void *ignore);
+static void wifiSetupTask(void *ignore);
 
 // Functions
-static void wifi_init(void);
 static void initialiseConsole(void);
 static void lvAppCreate(void);
 static void lv_val_update(lv_task_t *task);
 
+// WiFi Prov Manager
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static void get_device_service_name(char *service_name, size_t max);
+static void wifi_prov_print_qr(const char *name, const char *pop, const char *transport);
+
 // Callbacks
-static void scEventHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void cb_timeSyncEvent(struct timeval *tv);
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 
@@ -214,33 +227,46 @@ static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, co
  * TODO: Set GPIO pull-ups for buttons etc.
  */
 void app_main(void) {
+    ESP_LOGW(TAG, "flatpack2s2 pre-delay...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
     ESP_LOGW(TAG, "flatpack2s2 startup!");
+
+    //* initialise the main app event group and default event loop
+    appEventGroup = xEventGroupCreate();
+    assert(appEventGroup != NULL);
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     //* logging config
     esp_log_level_set("*", ESP_LOG_INFO);
     if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
 
-    //* initialise the main app event group
-    appEventGroup = xEventGroupCreate();
+    //* Initialize NVS partition
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        /* NVS partition was truncated and needs to be erased */
+        ESP_ERROR_CHECK(nvs_flash_erase());
 
-    //* initialize NVS and start the wifi setup process
-    ESP_ERROR_CHECK(nvs_flash_init());
-    // wifi_init();
+        /* Retry nvs_flash_init */
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
 
     //* start the command-line console task and wait for init
     initialiseConsole();
     esp_console_register_help_command();
     register_system_common();
-    xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 6, NULL);
+    register_flatpack2();
+    xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 10, NULL);
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    //* delay to let the console connect
+    vTaskDelay(pdMS_TO_TICKS(5000));
 
     //* Create OLED display task
     xLvglMutex = xSemaphoreCreateMutex();
     assert(xLvglMutex != NULL);
-
     // spawn task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 15, NULL);
-    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    // xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 15, NULL);
+    // xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create TWAI setup task
     xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
@@ -258,23 +284,23 @@ void app_main(void) {
     xTaskCreate(&ledTask, "ledTask", 1024 * 2, NULL, 3, NULL);
     xEventGroupWaitBits(appEventGroup, LED_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
+    //* Create WiFi Provisioning Manager task
+    xTaskCreate(&wifiSetupTask, "wifiProv", 1024 * 4, NULL, 3, NULL);
+
+    //* Create SNTP management task
+    xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
+
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
     xEventGroupWaitBits(appEventGroup, TEMP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    //* init wifi manager, register callbacks
-    // wrapping the stupid thing in delays seems to make it happier? idfk, there's something fucky going on with lvgl here
-    // wifi_manager_start();
-
-    //* Create SNTP management task
-    xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
 }
 
 /****************************************************************
  * * lvgl display management
  */
 static void displayTask(void *ignore) {
-    ESP_LOGI(DISP_TASK_TAG, "display task begin");
+    ESP_LOGI(DISP_TASK_TAG, "task start");
 
     // initialize LVGL itself + the ESP32 driver components
     lv_init();
@@ -320,23 +346,9 @@ static void displayTask(void *ignore) {
     // set up LVGL app
     lvAppCreate();
 
-    // start handler task
-    xTaskCreate(&lvTaskHandler, "lvgl.handler", 1024 * 2, NULL, 15, NULL);
-
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
 
-    while (true) {
-        vTaskDelay(portMAX_DELAY);
-    }
-
-    /* A task should NEVER return */
-    free(buf1);
-    vTaskDelete(NULL);
-}
-
-// putting this in its own stupid thing
-static void lvTaskHandler(void *ignore) {
     uint32_t lv_delay;
     while (true) {
         lv_delay = LV_TASK_PERIOD_MS;
@@ -349,7 +361,14 @@ static void lvTaskHandler(void *ignore) {
         // wait for next interval
         vTaskDelay(pdMS_TO_TICKS(lv_delay));
     }
+
+    /* A task should NEVER return */
+    free(buf1);
+    vTaskDelete(NULL);
 }
+
+// putting this in its own stupid thing
+static void lvTaskHandler(void *ignore) {}
 
 // setup lvgl app screens and transitions
 static void lvAppCreate(void) {
@@ -406,12 +425,11 @@ static void lvAppCreate(void) {
 
 
     // set up fp2 value update lvgl task
-    lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
+    // lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
     // switch to the new screen, for testing, because EFFORT
-    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
+    // lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
 }
-
 
 // lvgl event callbacks
 void lv_val_update(lv_task_t *task) {
@@ -440,7 +458,7 @@ void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const cha
  * TODO: most of this if we are honest
  */
 void twaiCtrlTask(void *ignore) {
-    ESP_LOGI(TWAI_CTRL_TASK_TAG, "TWAI initialization");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "ctrl task start");
 
     // TWAI_EN transceiver enable GPIO config
     static const gpio_config_t twai_en_conf = {
@@ -571,7 +589,7 @@ void twaiCtrlTask(void *ignore) {
 }
 
 void twaiTxTask(void *ignore) {
-    ESP_LOGI(TWAI_TX_TASK_TAG, "TWAI TX task start");
+    ESP_LOGI(TWAI_TX_TASK_TAG, "tx task start");
     xEventGroupSetBits(appEventGroup, TWAI_TX_RUN_BIT);
 
     while (true) {
@@ -596,7 +614,7 @@ void twaiTxTask(void *ignore) {
 }
 
 void twaiRxTask(void *ignore) {
-    ESP_LOGI(TWAI_RX_TASK_TAG, "TWAI RX task start");
+    ESP_LOGI(TWAI_RX_TASK_TAG, "rx task start");
     xEventGroupSetBits(appEventGroup, TWAI_RX_RUN_BIT);
 
     // get messages and process the heck out of them
@@ -672,7 +690,7 @@ void twaiRxTask(void *ignore) {
  * TODO: Make this receive color set requests instead of just doing a rainbow fade
  */
 void ledTask(void *ignore) {
-    ESP_LOGI(LED_TASK_TAG, "initializing RGB LED");
+    ESP_LOGI(LED_TASK_TAG, "led task start");
 
     hsv_t hsv;
 
@@ -706,89 +724,145 @@ void ledTask(void *ignore) {
 /****************************************************************
  * * Wifi Provisioning Task
  */
-static void smartConfigTask(void *ignore) {
-    EventBits_t uxBits;
-    ESP_ERROR_CHECK(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
-    smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_smartconfig_start(&cfg));
-    while (1) {
-        uxBits = xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
-        if (uxBits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "WiFi Connected");
-        }
-        if (uxBits & ESPTOUCH_DONE_BIT) {
-            ESP_LOGI(TAG, "SmartConfig Done");
-            esp_smartconfig_stop();
-            vTaskDelete(NULL);
-        }
-    }
-}
-
-static void wifi_init(void) {
+void wifiSetupTask(void *ignore) {
+    ESP_LOGI(WIFI_TASK_TAG, "wifi prov task start");
+    /* Initialize TCP/IP */
     ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    assert(sta_netif);
 
+    /* Register our event handler for Wi-Fi, IP and Provisioning related events */
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+
+    /* Initialize Wi-Fi including netif with default config */
+    esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &scEventHandler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &scEventHandler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &scEventHandler, NULL));
+    /* Configuration for the provisioning manager */
+    wifi_prov_mgr_config_t config = {.scheme = wifi_prov_scheme_softap, .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE};
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    /* Initialize provisioning manager with the configuration parameters set above */
+    ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
+
+    bool provisioned = false;
+
+#ifdef CONFIG_FP2S2_RESET_PROVISIONED
+    /* Reset provisioned state if we've been told to */
+    wifi_prov_mgr_reset_provisioning();
+#else
+    /* Let's find out if the device is provisioned */
+    ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
+#endif
+
+    /* If device is not yet provisioned start provisioning service */
+    if (!provisioned) {
+        ESP_LOGI(WIFI_TASK_TAG, "Starting provisioning");
+
+        /* WiFi SSID or BT device name */
+        char service_name[12];
+        get_device_service_name(service_name, sizeof(service_name));
+
+        /* Use encrypted (1) or plaintext (0) provisioning commands */
+        wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
+
+        /* Secret for WIFI_PROV_SECURITY_1 encryption */
+        const char *pop = "flatpack2s2";
+
+        /* WiFi password (ignored when using BLE) */
+        const char *service_key = NULL;
+
+        /* Start provisioning service */
+        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, pop, service_name, service_key));
+
+        /* Print QR code for provisioning */
+        wifi_prov_print_qr(service_name, pop, PROV_TRANSPORT_SOFTAP);
+    } else {
+        ESP_LOGI(WIFI_TASK_TAG, "Already provisioned, starting Wi-Fi STA");
+
+        /* We don't need the manager as device is already provisioned, so lets release it's resources */
+        wifi_prov_mgr_deinit();
+
+        /* Start Wi-Fi in station mode */
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+    }
+
+    // we are done
+    ESP_LOGI(WIFI_TASK_TAG, "WiFi provisioning complete, exiting task");
+    vTaskDelete(NULL);
 }
 
-static void scEventHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        xTaskCreate(smartConfigTask, "smartconfig", 1024 * 4, NULL, 3, NULL);
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-        xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
-    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SCAN_DONE) {
-        ESP_LOGI(TAG, "Scan done");
-    } else if (event_base == SC_EVENT && event_id == SC_EVENT_FOUND_CHANNEL) {
-        ESP_LOGI(TAG, "Found channel");
-    } else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD) {
-        ESP_LOGI(TAG, "Got SSID and password");
-
-        smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
-        wifi_config_t                      wifi_config;
-        uint8_t                            ssid[33]     = {0};
-        uint8_t                            password[65] = {0};
-        uint8_t                            rvd_data[33] = {0};
-
-        bzero(&wifi_config, sizeof(wifi_config_t));
-        memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
-        memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
-        wifi_config.sta.bssid_set = evt->bssid_set;
-        if (wifi_config.sta.bssid_set == true) {
-            memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
-        }
-
-        memcpy(ssid, evt->ssid, sizeof(evt->ssid));
-        memcpy(password, evt->password, sizeof(evt->password));
-        ESP_LOGI(TAG, "SSID:%s", ssid);
-        ESP_LOGI(TAG, "PASSWORD:%s", password);
-        if (evt->type == SC_TYPE_ESPTOUCH_V2) {
-            ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
-            ESP_LOGI(TAG, "RVD_DATA:");
-            for (int i = 0; i < 33; i++) {
-                printf("%02x ", rvd_data[i]);
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+    if (event_base == WIFI_PROV_EVENT) {
+        switch (event_id) {
+            case WIFI_PROV_START: ESP_LOGI(WIFI_TASK_TAG, "Provisioning started"); break;
+            case WIFI_PROV_CRED_RECV: {
+                wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
+                ESP_LOGI(WIFI_TASK_TAG,
+                         "Received Wi-Fi credentials"
+                         "\n\tSSID     : %s\n\tPassword : %s",
+                         (const char *)wifi_sta_cfg->ssid, (const char *)wifi_sta_cfg->password);
+                break;
             }
-            printf("\n");
+            case WIFI_PROV_CRED_FAIL: {
+                wifi_prov_sta_fail_reason_t *reason = (wifi_prov_sta_fail_reason_t *)event_data;
+                ESP_LOGE(WIFI_TASK_TAG,
+                         "Provisioning failed!\n\tReason : %s"
+                         "\n\tPlease reset to factory and retry provisioning",
+                         (*reason == WIFI_PROV_STA_AUTH_ERROR) ? "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
+                break;
+            }
+            case WIFI_PROV_CRED_SUCCESS: ESP_LOGI(WIFI_TASK_TAG, "Provisioning successful"); break;
+            case WIFI_PROV_END:
+                /* De-initialize manager once provisioning is finished */
+                wifi_prov_mgr_deinit();
+                break;
+            default: break;
         }
-
-        ESP_ERROR_CHECK(esp_wifi_disconnect());
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
-    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE) {
-        xEventGroupSetBits(appEventGroup, ESPTOUCH_DONE_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(WIFI_TASK_TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
+        /* Signal main application to continue execution */
+        xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(WIFI_TASK_TAG, "Disconnected. Connecting to the AP again...");
+        xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
+        esp_wifi_connect();
     }
+}
+
+static void get_device_service_name(char *service_name, size_t max) {
+    uint8_t     eth_mac[6];
+    const char *ssid_prefix = "FP2_";
+    esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
+    snprintf(service_name, max, "%s%02X%02X%02X", ssid_prefix, eth_mac[3], eth_mac[4], eth_mac[5]);
+}
+
+static void wifi_prov_print_qr(const char *name, const char *pop, const char *transport) {
+    if (!name || !transport) {
+        ESP_LOGW(WIFI_TASK_TAG, "Cannot generate QR code payload. Data missing.");
+        return;
+    }
+    char payload[150] = {0};
+    if (pop) {
+        snprintf(payload, sizeof(payload),
+                 "{\"ver\":\"%s\",\"name\":\"%s\""
+                 ",\"pop\":\"%s\",\"transport\":\"%s\"}",
+                 PROV_QR_VERSION, name, pop, transport);
+    } else {
+        snprintf(payload, sizeof(payload),
+                 "{\"ver\":\"%s\",\"name\":\"%s\""
+                 ",\"transport\":\"%s\"}",
+                 PROV_QR_VERSION, name, transport);
+    }
+    ESP_LOGI(WIFI_TASK_TAG, "Scan this QR code from the provisioning application for Provisioning.");
+    esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+    esp_qrcode_generate(&cfg, payload);
+    ESP_LOGI(WIFI_TASK_TAG, "If QR code is not visible, copy paste the below URL in a browser.\n%s?data=%s", QRCODE_BASE_URL, payload);
 }
 
 
@@ -797,7 +871,7 @@ static void scEventHandler(void *arg, esp_event_base_t event_base, int32_t event
  * TODO: Maybe pick up SNTP from DHCP?
  */
 void timeSyncTask(void *ignore) {
-    ESP_LOGI(TIMESYNC_TASK_TAG, "sntp task starting");
+    ESP_LOGI(TIMESYNC_TASK_TAG, "task start");
 
     //* Set time zone and SNTP operating parameters
     setenv("TZ", POSIX_TZ, 1);

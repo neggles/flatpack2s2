@@ -22,3 +22,6 @@ typedef struct {
 
 // twai message log func
 void logTwaiMsg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_log_level_t errLevel);
+
+// console commands
+void register_flatpack2(void);
