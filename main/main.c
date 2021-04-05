@@ -264,7 +264,7 @@ void app_main(void) {
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* delay to let the console connect
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     //* Create OLED display task
     xLvglMutex = xSemaphoreCreateMutex();
@@ -731,17 +731,17 @@ void fp2CmdTask(void *ignore) {
         uint32_t iset_actual  = Clamp(fp2_iset, 1, fp2_abs_imax);
 
         // see docs/Protocol.md for more info
-        txMsg.data[0] = (uint8_t)iset_actual & 0xFF;
-        txMsg.data[1] = (iset_actual >> 8) & 0xFF;
+        txMsg.data[0] = (iset_actual >> 8) & 0xFF;
+        txMsg.data[1] = (uint8_t)iset_actual & 0xFF;
 
-        txMsg.data[2] = vmeas_actual & 0xFF;
-        txMsg.data[3] = (vmeas_actual >> 8) & 0xFF;
+        txMsg.data[2] = (vmeas_actual >> 8) & 0xFF;
+        txMsg.data[3] = vmeas_actual & 0xFF;
 
-        txMsg.data[4] = vset_actual & 0xFF;
-        txMsg.data[5] = (vset_actual >> 8) & 0xFF;
+        txMsg.data[4] = (vset_actual >> 8) & 0xFF;
+        txMsg.data[5] = vset_actual & 0xFF;
 
-        txMsg.data[6] = vovp_actual & 0xFF;
-        txMsg.data[7] = (vovp_actual >> 8) & 0xFF;
+        txMsg.data[6] = (vovp_actual >> 8) & 0xFF;
+        txMsg.data[7] = vovp_actual & 0xFF;
 
         ESP_LOGI(TWAI_CTRL_TASK_TAG, "[TX][CMD_SET][0x%08x] PSU %02d: Vset %04d Vmeas %04d Vmax %04d Imax %04d",
                  txMsg.identifier, fp2.id, vset_actual, vmeas_actual, vovp_actual, iset_actual);
