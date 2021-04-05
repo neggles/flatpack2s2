@@ -125,9 +125,9 @@ static const char *TIMESYNC_TASK_TAG  = "sntp";
 
 // * Flatpack2-related Constants
 // ! see also: src/flatpack2.h
-static const uint32_t fp2_vout_min = CONFIG_FP2_VOUT_MIN;
-static const uint32_t fp2_vout_max = CONFIG_FP2_VOUT_MAX;
-static const uint32_t fp2_iout_max = CONFIG_FP2_IOUT_MAX;
+static const uint32_t fp2_abs_vmin = CONFIG_FP2_VOUT_MIN;
+static const uint32_t fp2_abs_vmax = CONFIG_FP2_VOUT_MAX;
+static const uint32_t fp2_abs_imax = CONFIG_FP2_IOUT_MAX;
 
 
 // * --------------- Eventgroup, queue, and semaphore handles --------------- */
@@ -139,14 +139,16 @@ static const int DISP_RUN_BIT       = BIT0;
 static const int TWAI_CTRL_RUN_BIT  = BIT1;
 static const int TWAI_RX_RUN_BIT    = BIT2;
 static const int TWAI_TX_RUN_BIT    = BIT3;
+static const int TWAI_ALL_RUN_BITS  = (TWAI_CTRL_RUN_BIT | TWAI_TX_RUN_BIT | TWAI_RX_RUN_BIT);
 static const int CONSOLE_RUN_BIT    = BIT4;
 static const int LED_RUN_BIT        = BIT5;
 static const int TEMP_RUN_BIT       = BIT6;
 static const int WIFI_CONNECTED_BIT = BIT10;
-static const int ESPTOUCH_DONE_BIT  = BIT11;
-static const int TIMESYNC_RUN_BIT   = BIT12;
-static const int TIME_VALID_BIT     = BIT13;
-static const int FP2_FOUND_BIT      = BIT14;
+static const int TIMESYNC_RUN_BIT   = BIT11;
+static const int TIME_VALID_BIT     = BIT12;
+static const int FP2_FOUND_BIT      = BIT13;
+static const int FP2_SET_REQ_BIT    = BIT14;
+
 
 // Task Queues
 static QueueHandle_t xTwaiTxQueue;
@@ -167,25 +169,41 @@ static flatpack2_t fp2;
 
 // lvgl objects
 static lv_indev_t *gpio_indev;
-static lv_obj_t *  scr_def;
-static lv_obj_t *  scr_status;
-static lv_obj_t *  lv_tile_output;
-static lv_obj_t *  lv_tile_status;
-static lv_obj_t *  lv_tile_vars;
-static lv_obj_t *  lv_vin;
-static lv_obj_t *  lv_vout;
-static lv_obj_t *  lv_iout;
-static lv_obj_t *  lv_wout;
-static lv_obj_t *  lv_temp;
-static lv_obj_t *  app_name;
-static lv_obj_t *  load_spinner;
+static lv_group_t *lv_group;
+
+static lv_obj_t *scr_def;
+static lv_obj_t *scr_status;
 
 static lv_obj_t *lv_tileview;
+static lv_obj_t *lv_tile_output;
+static lv_obj_t *lv_tile_status;
+static lv_obj_t *lv_tile_vars;
+
+struct {
+    lv_obj_t *vin;
+    lv_obj_t *vout;
+    lv_obj_t *iout;
+    lv_obj_t *wout;
+    lv_obj_t *temp;
+} lv_t3_labels;
+
+struct {
+    lv_obj_t *vin;
+    lv_obj_t *vout;
+    lv_obj_t *iout;
+    lv_obj_t *wout;
+    lv_obj_t *temp;
+} lv_t3_btns;
+
+static lv_obj_t *app_name;
+static lv_obj_t *load_spinner;
+
 
 // setpoints
-static uint32_t set_voltage; // desired setpoint voltage
-static uint32_t max_voltage; // Over-Voltage Protection voltage
-static uint32_t max_current; // Maximum current limit
+static uint32_t fp2_vset;  // desired setpoint voltage
+static uint32_t fp2_vmeas; // measured/feedback voltage
+static uint32_t fp2_vmax;  // Over-Voltage Protection voltage
+static uint32_t fp2_iset;  // Maximum current limit
 
 
 // * ---------------------- Static function prototypes ---------------------- */
@@ -197,25 +215,17 @@ static void displayTask(void *ignore);
 static void lvTaskHandler(void *ignore);
 static void ledTask(void *ignore);
 static void tempSensorTask(void *ignore);
-static void timeSyncTask(void *ignore);
 
 // Non-persistent tasks
 static void twaiRxTask(void *ignore);
 static void twaiTxTask(void *ignore);
-static void wifiSetupTask(void *ignore);
 
 // Functions
 static void initialiseConsole(void);
 static void lvAppCreate(void);
 static void lv_val_update(lv_task_t *task);
 
-// WiFi Prov Manager
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
-static void get_device_service_name(char *service_name, size_t max);
-static void wifi_prov_print_qr(const char *name, const char *pop, const char *transport);
-
 // Callbacks
-static void cb_timeSyncEvent(struct timeval *tv);
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 
 
@@ -227,18 +237,16 @@ static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, co
  * TODO: Set GPIO pull-ups for buttons etc.
  */
 void app_main(void) {
-    ESP_LOGW(TAG, "flatpack2s2 pre-delay...");
-    vTaskDelay(pdMS_TO_TICKS(5000));
     ESP_LOGW(TAG, "flatpack2s2 startup!");
+
+    //* logging config
+    esp_log_level_set("*", ESP_LOG_INFO);
+    if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
 
     //* initialise the main app event group and default event loop
     appEventGroup = xEventGroupCreate();
     assert(appEventGroup != NULL);
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    //* logging config
-    esp_log_level_set("*", ESP_LOG_INFO);
-    if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
 
     //* Initialize NVS partition
     esp_err_t ret = nvs_flash_init();
@@ -251,10 +259,6 @@ void app_main(void) {
     }
 
     //* start the command-line console task and wait for init
-    initialiseConsole();
-    esp_console_register_help_command();
-    register_system_common();
-    register_flatpack2();
     xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 10, NULL);
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
@@ -265,12 +269,12 @@ void app_main(void) {
     xLvglMutex = xSemaphoreCreateMutex();
     assert(xLvglMutex != NULL);
     // spawn task
-    // xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 15, NULL);
-    // xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 15, NULL);
+    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create TWAI setup task
     xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
-    xEventGroupWaitBits(appEventGroup, (TWAI_CTRL_RUN_BIT | TWAI_TX_RUN_BIT | TWAI_RX_RUN_BIT), pdFALSE, pdTRUE, portMAX_DELAY);
+    xEventGroupWaitBits(appEventGroup, TWAI_ALL_RUN_BITS, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* Create RGB LED update task
     xLedQueue = xQueueCreate(3, sizeof(hsv_t));
@@ -284,16 +288,12 @@ void app_main(void) {
     xTaskCreate(&ledTask, "ledTask", 1024 * 2, NULL, 3, NULL);
     xEventGroupWaitBits(appEventGroup, LED_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    //* Create WiFi Provisioning Manager task
-    xTaskCreate(&wifiSetupTask, "wifiProv", 1024 * 4, NULL, 3, NULL);
-
-    //* Create SNTP management task
-    xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
 
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
     xEventGroupWaitBits(appEventGroup, TEMP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
+    ESP_LOGW(TAG, "flatpack2s2 startup complete!");
 }
 
 /****************************************************************
@@ -367,9 +367,6 @@ static void displayTask(void *ignore) {
     vTaskDelete(NULL);
 }
 
-// putting this in its own stupid thing
-static void lvTaskHandler(void *ignore) {}
-
 // setup lvgl app screens and transitions
 static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
@@ -395,12 +392,11 @@ static void lvAppCreate(void) {
     lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
     lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
 
-
     // create status screen
     scr_status  = lv_obj_create(NULL, NULL);
     lv_tileview = lv_tileview_create(scr_status, NULL);
     // valid position grid
-    static lv_point_t lv_tiles[] = {{0, 0}, {1, 0}, {2, 0}};
+    static lv_point_t lv_tiles[] = {{0, 0}, {0, 1}, {1, 1}};
 
     lv_tileview_set_valid_positions(lv_tileview, lv_tiles, 3);
     lv_tileview_set_edge_flash(lv_tileview, true);
@@ -423,21 +419,35 @@ static void lvAppCreate(void) {
     lv_list_set_scroll_propagation(lv_tile_vars, true);
     lv_list_set_scrollbar_mode(lv_tile_vars, LV_SCROLLBAR_MODE_OFF);
 
+    // add buttons to the list
+    lv_t3_btns.vin  = lv_list_add_btn(lv_tile_vars, NULL, " Vin: ?");
+    lv_t3_btns.vout = lv_list_add_btn(lv_tile_vars, NULL, "Vout: ?");
+    lv_t3_btns.iout = lv_list_add_btn(lv_tile_vars, NULL, "Iout: ?");
+    lv_t3_btns.temp = lv_list_add_btn(lv_tile_vars, NULL, "Temp: ?");
+    lv_t3_btns.wout = lv_list_add_btn(lv_tile_vars, NULL, "Wout: ?");
+
+    // get label objects for the buttons so we can update their values later
+    lv_t3_labels.vin  = lv_list_get_btn_label(lv_t3_btns.vin);
+    lv_t3_labels.vout = lv_list_get_btn_label(lv_t3_btns.vout);
+    lv_t3_labels.iout = lv_list_get_btn_label(lv_t3_btns.iout);
+    lv_t3_labels.temp = lv_list_get_btn_label(lv_t3_btns.temp);
+    lv_t3_labels.wout = lv_list_get_btn_label(lv_t3_btns.wout);
 
     // set up fp2 value update lvgl task
-    // lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
+    lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
     // switch to the new screen, for testing, because EFFORT
-    // lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
+    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
+    lv_tileview_set_tile_act(lv_tileview, 1, 1, LV_ANIM_ON);
 }
 
 // lvgl event callbacks
 void lv_val_update(lv_task_t *task) {
-    lv_label_set_text_fmt(lv_vin, " Vin: %4dV", fp2.in_volts);
-    lv_label_set_text_fmt(lv_vout, "Vout: %4.1fV", fp2.out_volts);
-    lv_label_set_text_fmt(lv_iout, "Iout: %4.1fA", fp2.out_amps);
-    lv_label_set_text_fmt(lv_temp, "Temp: I %2d°C O %2d°C", fp2.temp_intake, fp2.temp_exhaust);
-    lv_label_set_text_fmt(lv_wout, "Wout: %4.1fW", fp2.out_watts);
+    lv_label_set_text_fmt(lv_t3_labels.vin, " Vin: %4dV", fp2.in_volts);
+    lv_label_set_text_fmt(lv_t3_labels.vout, "Vout: %4.1fV", fp2.out_volts);
+    lv_label_set_text_fmt(lv_t3_labels.iout, "Iout: %4.1fA", fp2.out_amps);
+    lv_label_set_text_fmt(lv_t3_labels.temp, "Temp: I %2d°C O %2d°C", fp2.temp_intake, fp2.temp_exhaust);
+    lv_label_set_text_fmt(lv_t3_labels.wout, "Wout: %4.1fW", fp2.out_watts);
 }
 
 // lvgl log callback
@@ -455,10 +465,17 @@ void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const cha
 
 /****************************************************************
  * * TWAI control task
- * TODO: most of this if we are honest
+ * TODO: maybe make this handle sending commands?
+ * TODO: actual dynamic adjustment of setpoint
  */
 void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "ctrl task start");
+
+    // temporarary fixed setpoints
+    fp2_vset  = 4800;         // 48 volts DC
+    fp2_vmeas = fp2_vset;     // no feedback
+    fp2_vmax  = fp2_abs_vmax; // OVP to 57.6V
+    fp2_iset  = 200;          // 20 amps max because of reasons
 
     // TWAI_EN transceiver enable GPIO config
     static const gpio_config_t twai_en_conf = {
@@ -500,11 +517,12 @@ void twaiCtrlTask(void *ignore) {
     // reconfigure TWAI alerts
     // enable logging, unless TWAI ISR is in IRAM in which case it doesn't work anyway
 #ifdef CONFIG_TWAI_ISR_IN_IRAM
-    uint32_t fp2_twai_a_config = (TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_ABOVE_ERR_WARN |
-                                  TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
-#else
-    uint32_t fp2_twai_a_config = (TWAI_ALERT_AND_LOG | TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL |
+    uint32_t fp2_twai_a_config = (TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL |
                                   TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
+#else
+    uint32_t fp2_twai_a_config =
+        (TWAI_ALERT_AND_LOG | TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL |
+         TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
 #endif // CONFIG_TWAI_ISR_IN_IRAM
 
     twai_reconfigure_alerts(fp2_twai_a_config, NULL);
@@ -566,7 +584,8 @@ void twaiCtrlTask(void *ignore) {
                         vTaskResume(rxTaskHandle);
                         break;
                     } else {
-                        ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] TWAI restart attempt %d failed, retrying in 3s...", i + 1);
+                        ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] TWAI restart attempt %d failed, retrying in 3s...",
+                                 i + 1);
                         vTaskDelay(pdMS_TO_TICKS(3000));
                     }
                 }
@@ -579,8 +598,9 @@ void twaiCtrlTask(void *ignore) {
         twai_status_info_t status;
         twai_get_status_info(&status);
         ESP_LOGD(TWAI_CTRL_TASK_TAG, "[TWAI] state=%d arb=%d err=%d [TX] q=%d err=%d fail=%d [RX] q=%d err=%d miss=%d",
-                 (int)status.state, status.arb_lost_count, status.bus_error_count, status.msgs_to_tx, status.tx_error_counter,
-                 status.tx_failed_count, status.msgs_to_rx, status.rx_error_counter, status.rx_missed_count);
+                 (int)status.state, status.arb_lost_count, status.bus_error_count, status.msgs_to_tx,
+                 status.tx_error_counter, status.tx_failed_count, status.msgs_to_rx, status.rx_error_counter,
+                 status.rx_missed_count);
     }
 
     // tasks should never return or exit, only ask to be killed
@@ -644,6 +664,8 @@ void twaiRxTask(void *ignore) {
                     updateFp2Details(&rxMsg, &fp2, 0);
                     // send a login request
                     xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
+                    // set FP2_FOUND_BIT
+                    xEventGroupSetBits(appEventGroup, FP2_FOUND_BIT);
                     msgProcessed = true;
                     break;
                 case (FP2_MSG_STATUS | 0x04): // 0x04 = CV / normal
@@ -662,6 +684,8 @@ void twaiRxTask(void *ignore) {
                     txMsg.data[1]          = rxMsg.identifier & 0xff;
                     txMsg.data[2]          = 0x00;
                     xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
+                    // flip the flag requesting an output voltage set command
+                    xEventGroupSetBits(appEventGroup, FP2_SET_REQ_BIT);
                     msgProcessed = true;
                     break;
                 case FP2_MSG_ALERTS:
@@ -684,6 +708,44 @@ void twaiRxTask(void *ignore) {
     vTaskDelete(NULL);
 }
 
+void fp2CmdTask(void *ignore) {
+    // wait until we've found the PSU
+    xEventGroupWaitBits(appEventGroup, FP2_FOUND_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    while (true) {
+        // wait for a set request, clear bit once we get it
+        xEventGroupWaitBits(appEventGroup, FP2_SET_REQ_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+        twai_message_t txMsg;
+        txMsg.extd             = 1;
+        txMsg.identifier       = FP2_CMD_SET_OUT | fp2.cmd_id;
+        txMsg.data_length_code = 8;
+
+        // clamp max voltage/current setpoints to PSU capabilities from config
+        uint32_t vset_actual  = Clamp(fp2_vset, fp2_abs_vmax, fp2_abs_vmin);
+        uint32_t vmeas_actual = Clamp(fp2_vmeas, fp2_abs_vmax, fp2_abs_vmin);
+        uint32_t vovp_actual  = Clamp(fp2_vmax, fp2_abs_vmax, fp2_abs_vmin);
+        uint32_t imax_actual  = Clamp(fp2_iset, fp2_abs_imax, 1);
+
+        // see docs/Protocol.md for more info
+        txMsg.data[0] = (fp2_iset >> 8) & 0xFF;
+        txMsg.data[1] = fp2_iset & 0xFF;
+
+        txMsg.data[2] = (fp2_vmeas >> 8) & 0xFF;
+        txMsg.data[3] = fp2_vmeas & 0xFF;
+
+        txMsg.data[4] = (fp2_vset >> 8) & 0xFF;
+        txMsg.data[5] = fp2_vset & 0xFF;
+
+        txMsg.data[6] = (fp2_vmax >> 8) & 0xFF;
+        txMsg.data[7] = fp2_vmax & 0xFF;
+
+        ESP_LOGD(TWAI_CTRL_TASK_TAG, "Sending CMD_SET to PSU %2d: Vset %4d Vmeas %4d Vmax %4d Imax %4d", fp2.id,
+                 vset_actual, vmeas_actual, vovp_actual, imax_actual);
+        xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
+    }
+
+    // tasks should never return or exit, only ask to be killed
+    vTaskDelete(NULL);
+}
 
 /****************************************************************
  * * RGB LED control task
@@ -718,195 +780,6 @@ void ledTask(void *ignore) {
     // should never execute
     vQueueDelete(xLedQueue);
     vTaskDelete(NULL);
-}
-
-
-/****************************************************************
- * * Wifi Provisioning Task
- */
-void wifiSetupTask(void *ignore) {
-    ESP_LOGI(WIFI_TASK_TAG, "wifi prov task start");
-    /* Initialize TCP/IP */
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    /* Register our event handler for Wi-Fi, IP and Provisioning related events */
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
-
-    /* Initialize Wi-Fi including netif with default config */
-    esp_netif_create_default_wifi_sta();
-    esp_netif_create_default_wifi_ap();
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    /* Configuration for the provisioning manager */
-    wifi_prov_mgr_config_t config = {.scheme = wifi_prov_scheme_softap, .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE};
-
-    /* Initialize provisioning manager with the configuration parameters set above */
-    ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
-
-    bool provisioned = false;
-
-#ifdef CONFIG_FP2S2_RESET_PROVISIONED
-    /* Reset provisioned state if we've been told to */
-    wifi_prov_mgr_reset_provisioning();
-#else
-    /* Let's find out if the device is provisioned */
-    ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
-#endif
-
-    /* If device is not yet provisioned start provisioning service */
-    if (!provisioned) {
-        ESP_LOGI(WIFI_TASK_TAG, "Starting provisioning");
-
-        /* WiFi SSID or BT device name */
-        char service_name[12];
-        get_device_service_name(service_name, sizeof(service_name));
-
-        /* Use encrypted (1) or plaintext (0) provisioning commands */
-        wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
-
-        /* Secret for WIFI_PROV_SECURITY_1 encryption */
-        const char *pop = "flatpack2s2";
-
-        /* WiFi password (ignored when using BLE) */
-        const char *service_key = NULL;
-
-        /* Start provisioning service */
-        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, pop, service_name, service_key));
-
-        /* Print QR code for provisioning */
-        wifi_prov_print_qr(service_name, pop, PROV_TRANSPORT_SOFTAP);
-    } else {
-        ESP_LOGI(WIFI_TASK_TAG, "Already provisioned, starting Wi-Fi STA");
-
-        /* We don't need the manager as device is already provisioned, so lets release it's resources */
-        wifi_prov_mgr_deinit();
-
-        /* Start Wi-Fi in station mode */
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        ESP_ERROR_CHECK(esp_wifi_start());
-    }
-
-    // we are done
-    ESP_LOGI(WIFI_TASK_TAG, "WiFi provisioning complete, exiting task");
-    vTaskDelete(NULL);
-}
-
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
-    if (event_base == WIFI_PROV_EVENT) {
-        switch (event_id) {
-            case WIFI_PROV_START: ESP_LOGI(WIFI_TASK_TAG, "Provisioning started"); break;
-            case WIFI_PROV_CRED_RECV: {
-                wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
-                ESP_LOGI(WIFI_TASK_TAG,
-                         "Received Wi-Fi credentials"
-                         "\n\tSSID     : %s\n\tPassword : %s",
-                         (const char *)wifi_sta_cfg->ssid, (const char *)wifi_sta_cfg->password);
-                break;
-            }
-            case WIFI_PROV_CRED_FAIL: {
-                wifi_prov_sta_fail_reason_t *reason = (wifi_prov_sta_fail_reason_t *)event_data;
-                ESP_LOGE(WIFI_TASK_TAG,
-                         "Provisioning failed!\n\tReason : %s"
-                         "\n\tPlease reset to factory and retry provisioning",
-                         (*reason == WIFI_PROV_STA_AUTH_ERROR) ? "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
-                break;
-            }
-            case WIFI_PROV_CRED_SUCCESS: ESP_LOGI(WIFI_TASK_TAG, "Provisioning successful"); break;
-            case WIFI_PROV_END:
-                /* De-initialize manager once provisioning is finished */
-                wifi_prov_mgr_deinit();
-                break;
-            default: break;
-        }
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(WIFI_TASK_TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
-        /* Signal main application to continue execution */
-        xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(WIFI_TASK_TAG, "Disconnected. Connecting to the AP again...");
-        xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
-        esp_wifi_connect();
-    }
-}
-
-static void get_device_service_name(char *service_name, size_t max) {
-    uint8_t     eth_mac[6];
-    const char *ssid_prefix = "FP2_";
-    esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
-    snprintf(service_name, max, "%s%02X%02X%02X", ssid_prefix, eth_mac[3], eth_mac[4], eth_mac[5]);
-}
-
-static void wifi_prov_print_qr(const char *name, const char *pop, const char *transport) {
-    if (!name || !transport) {
-        ESP_LOGW(WIFI_TASK_TAG, "Cannot generate QR code payload. Data missing.");
-        return;
-    }
-    char payload[150] = {0};
-    if (pop) {
-        snprintf(payload, sizeof(payload),
-                 "{\"ver\":\"%s\",\"name\":\"%s\""
-                 ",\"pop\":\"%s\",\"transport\":\"%s\"}",
-                 PROV_QR_VERSION, name, pop, transport);
-    } else {
-        snprintf(payload, sizeof(payload),
-                 "{\"ver\":\"%s\",\"name\":\"%s\""
-                 ",\"transport\":\"%s\"}",
-                 PROV_QR_VERSION, name, transport);
-    }
-    ESP_LOGI(WIFI_TASK_TAG, "Scan this QR code from the provisioning application for Provisioning.");
-    esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
-    esp_qrcode_generate(&cfg, payload);
-    ESP_LOGI(WIFI_TASK_TAG, "If QR code is not visible, copy paste the below URL in a browser.\n%s?data=%s", QRCODE_BASE_URL, payload);
-}
-
-
-/****************************************************************
- * * SNTP time sync setup task
- * TODO: Maybe pick up SNTP from DHCP?
- */
-void timeSyncTask(void *ignore) {
-    ESP_LOGI(TIMESYNC_TASK_TAG, "task start");
-
-    //* Set time zone and SNTP operating parameters
-    setenv("TZ", POSIX_TZ, 1);
-    tzset();
-
-    // wait for wifi connected bit in event group
-    ESP_LOGI(TIMESYNC_TASK_TAG, "TZ set, waiting for wifi");
-    xEventGroupWaitBits(appEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    // configure and start SNTP
-    ESP_LOGI(TIMESYNC_TASK_TAG, "Starting sntp service");
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, CONFIG_SNTP_SERVER);
-    sntp_set_time_sync_notification_cb(cb_timeSyncEvent);
-    sntp_init();
-
-    ESP_LOGI(TIMESYNC_TASK_TAG, "Waiting for system time to be set...");
-    xEventGroupWaitBits(appEventGroup, TIMESYNC_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    ESP_LOGI(TIMESYNC_TASK_TAG, "System time set, exiting");
-    vTaskDelete(NULL);
-}
-
-// sntp event callback
-void cb_timeSyncEvent(struct timeval *tv) {
-    ESP_LOGI(TIMESYNC_TASK_TAG, "SNTP sync event notification");
-
-    if ((xEventGroupGetBits(appEventGroup) & TIMESYNC_RUN_BIT) == 0) xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
-
-    char      strftime_sntp[64];
-    time_t    sntp     = (time_t)tv->tv_sec;
-    struct tm sntpinfo = {0};
-    localtime_r(&sntp, &sntpinfo);
-    strftime(strftime_sntp, sizeof(strftime_sntp), "%c", &sntpinfo);
-    ESP_LOGI(TIMESYNC_TASK_TAG, "received date/time: %s", strftime_sntp);
 }
 
 
@@ -950,6 +823,10 @@ void tempSensorTask(void *ignore) {
  * * Command line console task
  */
 void consoleTask(void *ignore) {
+
+    initialiseConsole();
+    esp_console_register_help_command();
+    register_system_common();
 
     /**
      * Prompt to be printed before each line.
@@ -1009,7 +886,8 @@ static void initialiseConsole(void) {
     fcntl(fileno(stdin), F_SETFL, 0);
 
     /* initialise the console */
-    esp_console_config_t console_config = {.max_cmdline_args = 8, .max_cmdline_length = 256, .hint_color = atoi(LOG_COLOR_CYAN)};
+    esp_console_config_t console_config = {
+        .max_cmdline_args = 8, .max_cmdline_length = 256, .hint_color = atoi(LOG_COLOR_CYAN)};
     ESP_ERROR_CHECK(esp_console_init(&console_config));
 
     /* Configure linenoise line completion library. */
