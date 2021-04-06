@@ -6,10 +6,9 @@
 /**
  * Log tags
  */
-const char *TAG            = "flatpack2";
-const char *FP2_STATUS_TAG = "fp2.Status";
-const char *FP2_ALERT_TAG  = "fp2.Alert";
-const char *FP2_LOGIN_TAG  = "fp2.Login";
+const char *TAG           = "fp2";
+const char *FP2_ALERT_TAG = "fp2.Alert";
+const char *FP2_LOGIN_TAG = "fp2.Login";
 
 /**
  * Alert strings
@@ -44,7 +43,7 @@ void log_twai_msg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_l
 
     // print message into buffer and log at appropriate level
     char buf[100];
-    snprintf(buf, sizeof(buf), "[%s][%s] ID %#08x, len=%.2d, extd=%.1d, rtr=%.1d, dlc_non_comp=%.1d", msgDir, msgType,
+    snprintf(buf, sizeof(buf), "[%s][%s] ID %#010x, len=%.2d, extd=%.1d, rtr=%.1d, dlc_non_comp=%.1d", msgDir, msgType,
              twaiMsg->identifier, twaiMsg->data_length_code, twaiMsg->extd, twaiMsg->rtr, twaiMsg->dlc_non_comp);
     switch (errLevel) {
         case ESP_LOG_VERBOSE: ESP_LOGV(TAG, "%s", buf); break;
@@ -92,7 +91,7 @@ void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
         } else {
             // Extract existing PSU ID from MSG_HELLO
             psu->id     = (rxMsg->identifier >> 18) & 0xff;
-            psu->cmd_id = (rxMsg->identifier & 0x00ff0000);
+            psu->cmd_id = ((psu->id << 16) & 0x00ff0000);
         }
 
         // update serial number
@@ -127,9 +126,9 @@ void fp2_update_status(twai_message_t *rxMsg, flatpack2_t *psu) {
     psu->sensors.watts   = psu->sensors.amps * psu->sensors.vdc;
     psu->sensors.vac     = ((rxMsg->data[VIN_HIGH_BYTE] << 8) + rxMsg->data[VIN_LOW_BYTE]);
     psu->status          = rxMsg->identifier & 0xff;
-    ESP_LOGI(FP2_STATUS_TAG, "[RX][MSG_STATUS] ID %#04x: VIn %03dV, VOut %2.2fV, IOut %2.1fA, POut %4.2fW", psu->id,
+    ESP_LOGI(TAG, "[RX][MSG_STATUS] ID %#04x: VIn %03dV, VOut %2.2fV, IOut %2.1fA, POut %4.2fW", psu->id,
              psu->sensors.vac, psu->sensors.vdc, psu->sensors.amps, psu->sensors.watts);
-    ESP_LOGI(FP2_STATUS_TAG, "[RX][MSG_STATUS]          Intake %d°C, Exhaust %d°C, Status %#04x", psu->sensors.intake,
+    ESP_LOGI(TAG, "[RX][MSG_STATUS]          Intake %d°C, Exhaust %d°C, Status %#04x", psu->sensors.intake,
              psu->sensors.exhaust, psu->status);
 }
 
@@ -189,6 +188,9 @@ twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set) {
     txMsg.data_length_code = 8;
     txMsg.self             = 0;
     memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
+
+    ESP_LOGI(TAG, "[TX][CMD_SET][%#010x] PSU %02d: Vset %04d Vmeas %04d Vmax %04d Iout %04d",
+             txMsg.identifier, psu->id, set->vset, set->vmeas, set->vovp, set->iout);
     return txMsg;
 }
 

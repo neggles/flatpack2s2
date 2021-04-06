@@ -463,10 +463,11 @@ void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "ctrl task start");
 
     // temporarary fixed setpoints
-    fp2Set.vset  = 4800;         // 48 volts DC
-    fp2Set.vmeas = fp2Set.vset;  // no feedback
-    fp2Set.vovp  = fp2_abs_vmax; // OVP to 57.6V
-    fp2Set.iout  = 200;          // 20 amps max because of reasons
+    fp2Set.vset   = 4800;         // 48 volts DC
+    fp2Set.vmeas  = fp2Set.vset;  // no feedback
+    fp2Set.vovp   = fp2_abs_vmax; // OVP to 57.6V
+    fp2Set.iout   = 200;          // 20 amps max because of reasons
+    fp2Set.walkin = FP2_WALKIN_5S;
 
     // TWAI_EN transceiver enable GPIO config
     static const gpio_config_t twai_en_conf = {
