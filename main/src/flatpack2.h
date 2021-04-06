@@ -10,6 +10,9 @@
 #include "hal/twai_types.h"
 #include <esp_log.h>
 
+// gimme my macros
+#include "macros.h"
+
 // default PSU ID to assign a PSU
 #define FP2_ID_DEFAULT 0x01
 
@@ -23,8 +26,6 @@
 #define FP2_CMD_SET_DEF   0x05009c00
 #define FP2_CMD_SET_OUT   0x05004004
 #define FP2_CMD_GET_ALARM 0x0500b00c
-#define FP2_WALKIN_5S     0x04
-#define FP2_WALKIN_60S    0x05
 
 // RX message IDs from power supply
 #define FP2_MSG_STATUS    0x05004000
@@ -33,10 +34,15 @@
 #define FP2_MSG_ALERTS    0x0500BFFC
 
 // status codes (last byte of ID in MSG_STATUS)
-#define FP2_STATUS_OK     0x04 /* PSU status normal, CV mode */
-#define FP2_STATUS_WARN   0x08 /* PSU status normal, CC mode, triggers warning */
-#define FP2_STATUS_ALARM  0x0C /* PSU has a fault, query for fault codes */
-#define FP2_STATUS_WALKIN 0x10 /* PSU is in walk-in / warm-up state (lasts 5s or 60s depending on config) */
+typedef enum {
+    FP2_STATUS_OK     = 0x04, /* PSU status normal, CV mode */
+    FP2_STATUS_WARN   = 0x08, /* PSU status normal, CC mode, triggers warning */
+    FP2_STATUS_ALARM  = 0x0C, /* PSU has a fault, query for fault codes */
+    FP2_STATUS_WALKIN = 0x10  /* PSU is in walk-in / warm-up state (lasts 5s or 60s depending on config) */
+} fp2_status_t;
+
+// walkin rates
+typedef enum { FP2_WALKIN_5S = 0x04, FP2_WALKIN_60S = 0x05 } fp2_walkin_t;
 
 /**
  * Status message payload bytes.
@@ -50,14 +56,17 @@
  * All values are little-endian
  *
  */
-#define FP2_BYTE_INTAKE_TEMP  0 // Intake temperature
-#define FP2_BYTE_IOUT_L       1 // Iout low byte
-#define FP2_BYTE_IOUT_H       2 // Iout high byte
-#define FP2_BYTE_VOUT_L       3 // Vout low byte
-#define FP2_BYTE_VOUT_H       4 // Vout high byte
-#define FP2_BYTE_VIN_L        5 // Vin low byte
-#define FP2_BYTE_VIN_H        6 // Vin high byte
-#define FP2_BYTE_EXHAUST_TEMP 7 // Exhaust temperature
+typedef enum {
+    INTAKE_TEMP_BYTE, // Intake temperature
+    IOUT_LOW_BYTE,    // Iout low byte
+    IOUT_HIGH_BYTE,   // Iout high byte
+    VOUT_LOW_BYTE,    // Vout low byte
+    VOUT_HIGH_BYTE,   // Vout high byte
+    VIN_LOW_BYTE,     // Vin low byte
+    VIN_HIGH_BYTE,    // Vin high byte
+    EXHAUST_TEMP_BYTE // Exhaust temperature
+} msg_status_byte_t;
+
 
 /**
  * Set command payload bytes.
@@ -69,14 +78,17 @@
  * OVP voltage is the threshold for PSU emergency shutdown, on a FP2 HE 48V/2000W this should be 59.5V
  *
  */
-#define FP2_BYTE_IMAX_L  0 // Iout low byte
-#define FP2_BYTE_IMAX_H  1 // Iout high byte
-#define FP2_BYTE_VMEAS_L 2 // Vmeas low byte
-#define FP2_BYTE_VMEAS_H 4 // Vmeas high byte
-#define FP2_BYTE_VSET_L  5 // Vdesired low byte
-#define FP2_BYTE_VSET_H  6 // Vdesired high byte
-#define FP2_BYTE_VOVP_L  7 // Vovp low byte
-#define FP2_BYTE_VOVP_H  8 // Vovp high byte
+typedef enum {
+    IMAX_LOW_BYTE,   // Iout low byte
+    IMAX_HIGH_BYTE,  // Iout high byte
+    VMEAS_LOW_BYTE,  // Vmeas low byte
+    VMEAS_HIGH_BYTE, // Vmeas high byte
+    VSET_LOW_BYTE,   // Vdesired low byte
+    VSET_HIGH_BYTE,  // Vdesired high byte
+    VOVP_LOW_BYTE,   // Vovp low byte
+    VOVP_HIGH_BYTE,  // Vovp high byte
+} cmd_set_byte_t;
+
 
 /**
  * Defaults set command payload bytes.
@@ -93,28 +105,32 @@
 /**
  * Power supply unit data structure
  */
+typedef struct {
+    uint32_t vac;
+    float    vdc;
+    float    amps;
+    float    watts;
+    uint32_t intake;
+    uint32_t exhaust;
+} fp2_sensors_t;
+
+typedef struct {
+    uint32_t     iset;
+    uint32_t     vset;
+    uint32_t     vmeas;
+    uint32_t     vmax;
+    fp2_walkin_t walkin;
+} fp2_settings_t;
 
 typedef struct {
     uint8_t        serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
-    uint8_t        id;        //< PSU's chosen/assigned ID number, 0x04-0x3F
-    uint32_t       cmd_id;    //< PSU's command ID number, ID left-shifted by 18 bits
-    uint32_t       in_volts;  //< current input voltage
-    float          out_volts;
-    float          out_amps;
-    float          out_watts;
-    uint32_t       temp_intake;
-    uint32_t       temp_exhaust;
-    uint8_t        status;
+    uint32_t       id;
+    uint32_t       cmd_id;
+    fp2_sensors_t  sensors;
+    fp2_settings_t set;
+    fp2_status_t   status;
     twai_message_t msg_login; //< message to send this PSU to log into it
 } flatpack2_t;
-
-typedef enum {
-    send_login,
-    set_defaults,
-    set_output,
-    request_alerts,
-} twai_tx_action_t;
-
 
 extern const char *fp2_alerts0_str[];
 extern const char *fp2_alerts1_str[];
@@ -130,7 +146,15 @@ extern const char *FP2_LOGIN_TAG;
 void processFp2Status(twai_message_t *rxMsg, flatpack2_t *psu);
 
 // process alert message
-void processFp2Alert(twai_message_t *rxMsg);
+void processFp2Alert(twai_message_t *rxMsg, flatpack2_t *psu);
 
 // update saved details
 void updateFp2Details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq);
+
+// twai message logging
+void logTwaiMsg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_log_level_t errLevel);
+
+void fp2_set_output(flatpack2_t *psu, uint32_t imax, uint32_t vset, uint32_t vmeas, uint32_t vovp)
+
+    // send set command
+    // void setFp2Output()

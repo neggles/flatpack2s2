@@ -26,12 +26,9 @@
 #include "esp_event.h"
 #include "esp_freertos_hooks.h"
 #include "esp_log.h"
-#include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
-#include "esp_wpa2.h"
 #include "nvs_flash.h"
 
 // wifi prov mgmt
@@ -68,8 +65,9 @@
 #include "lvgl_gpiodev.h"
 
 // Extra project source files (helper functions etc.)
-#include "helpers.h"
-// flatpack2 helper functions and definitions
+#include "types.h"
+#include "macros.h"
+// flatpack2 functions, types, etc - should probably make this a component
 #include "flatpack2.h"
 
 
@@ -444,11 +442,11 @@ static void lvAppCreate(void) {
 
 // lvgl event callbacks
 void lv_val_update(lv_task_t *task) {
-    lv_label_set_text_fmt(lv_t3_labels.vin, " Vin: %4dV", fp2.in_volts);
-    lv_label_set_text_fmt(lv_t3_labels.vout, "Vout: %4.1fV", fp2.out_volts);
-    lv_label_set_text_fmt(lv_t3_labels.iout, "Iout: %4.1fA", fp2.out_amps);
-    lv_label_set_text_fmt(lv_t3_labels.temp, "Temp: I %2d°C O %2d°C", fp2.temp_intake, fp2.temp_exhaust);
-    lv_label_set_text_fmt(lv_t3_labels.wout, "Wout: %4.1fW", fp2.out_watts);
+    lv_label_set_text_fmt(lv_t3_labels.vin, " Vin: %4dV", fp2.sensors.vac);
+    lv_label_set_text_fmt(lv_t3_labels.vout, "Vout: %4.1fV", fp2.sensors.vdc);
+    lv_label_set_text_fmt(lv_t3_labels.iout, "Iout: %4.1fA", fp2.sensors.amps);
+    lv_label_set_text_fmt(lv_t3_labels.temp, "Temp: I %2d°C O %2d°C", fp2.sensors.intake, fp2.sensors.exhaust);
+    lv_label_set_text_fmt(lv_t3_labels.wout, "Wout: %4.1fW", fp2.sensors.watts);
 }
 
 // lvgl log callback
@@ -531,10 +529,6 @@ void twaiCtrlTask(void *ignore) {
 
     xEventGroupSetBits(appEventGroup, TWAI_CTRL_RUN_BIT);
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "Initialization complete");
-
-    // set basics of msg_login
-    fp2.msg_login.extd             = 1;
-    fp2.msg_login.data_length_code = 8;
 
     // create RX task
     TaskHandle_t rxTaskHandle;
@@ -686,7 +680,7 @@ void twaiRxTask(void *ignore) {
                     txMsg.identifier       = FP2_CMD_GET_ALARM | fp2.cmd_id;
                     txMsg.data_length_code = 3;
                     txMsg.data[0]          = 0x08;
-                    txMsg.data[1]          = rxMsg.identifier & 0xff;
+                    txMsg.data[1]          = LowByte(rxMsg.identifier);
                     txMsg.data[2]          = 0x00;
                     xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                     // flip the flag requesting an output voltage set command
@@ -695,7 +689,7 @@ void twaiRxTask(void *ignore) {
                     break;
                 case FP2_MSG_ALERTS:
                     if (TWAI_MSG_LOG_ALL) logTwaiMsg(&rxMsg, 0, "ALERTS", ESP_LOG_DEBUG);
-                    processFp2Alert(&rxMsg);
+                    processFp2Alert(&rxMsg, &fp2);
                     msgProcessed = true;
                     break;
                 default: break;
@@ -732,7 +726,7 @@ void fp2CmdTask(void *ignore) {
 
         // see docs/Protocol.md for more info
         txMsg.data[0] = (iset_actual >> 8) & 0xFF;
-        txMsg.data[1] = (uint8_t)iset_actual & 0xFF;
+        txMsg.data[1] = iset_actual & 0xFF;
 
         txMsg.data[2] = (vmeas_actual >> 8) & 0xFF;
         txMsg.data[3] = vmeas_actual & 0xFF;
@@ -743,7 +737,7 @@ void fp2CmdTask(void *ignore) {
         txMsg.data[6] = (vovp_actual >> 8) & 0xFF;
         txMsg.data[7] = vovp_actual & 0xFF;
 
-        ESP_LOGI(TWAI_CTRL_TASK_TAG, "[TX][CMD_SET][0x%08x] PSU %02d: Vset %04d Vmeas %04d Vmax %04d Imax %04d",
+        ESP_LOGI(TWAI_CTRL_TASK_TAG, "[TX][CMD_SET][%#08x] PSU %02d: Vset %04d Vmeas %04d Vmax %04d Imax %04d",
                  txMsg.identifier, fp2.id, vset_actual, vmeas_actual, vovp_actual, iset_actual);
         logTwaiMsg(&txMsg, 1, "CMD_SET", ESP_LOG_INFO);
         xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
@@ -869,7 +863,7 @@ void consoleTask(void *ignore) {
         } else if (err == ESP_ERR_INVALID_ARG) {
             // command was empty
         } else if (err == ESP_OK && ret != ESP_OK) {
-            printf("Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
+            printf("Command returned non-zero error code: %#x (%s)\n", ret, esp_err_to_name(ret));
         } else if (err != ESP_OK) {
             printf("Internal error: %s\n", esp_err_to_name(err));
         }

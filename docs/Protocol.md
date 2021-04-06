@@ -118,7 +118,7 @@ Sent by a logged-out power supply every ten seconds or so. Similar to the CAN he
 </table>
 
 
-## **CMD** Set voltage and current limits, `0x05xx4804`
+## **CMD** Set voltage and current limits, `0x05xx4004`
 Sent to the power supply to immediately set output voltage and current limits.  
 **If the supply logs out, these settings will be lost - default voltage will apply, and current limit will be set to factory maximum.**
 
