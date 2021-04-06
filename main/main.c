@@ -125,6 +125,7 @@ static const char *TIMESYNC_TASK_TAG  = "sntp";
 // ! see also: src/flatpack2.h
 static const uint32_t fp2_abs_vmin = CONFIG_FP2_VOUT_MIN;
 static const uint32_t fp2_abs_vmax = CONFIG_FP2_VOUT_MAX;
+static const uint32_t fp2_abs_vovp = fp2_abs_vmax + 150; // 2 volts over max vout seems to work
 static const uint32_t fp2_abs_imax = CONFIG_FP2_IOUT_MAX;
 
 
@@ -387,11 +388,11 @@ static void lvAppCreate(void) {
     scr_status  = lv_obj_create(NULL, NULL);
     lv_tileview = lv_tileview_create(scr_status, NULL);
     // valid position grid
-    static lv_point_t lv_tiles[] = {{0, 0}, {0, 1}, {1, 1}};
+    static lv_point_t lv_tiles[] = {{0, 0}, {1, 0}, {2, 0}};
 
     lv_tileview_set_valid_positions(lv_tileview, lv_tiles, 3);
     lv_tileview_set_edge_flash(lv_tileview, true);
-    lv_page_set_scrollbar_mode(lv_tileview, LV_SCRLBAR_MODE_OFF);
+    lv_page_set_scrollbar_mode(lv_tileview, LV_SCROLLBAR_MODE_OFF);
 
     // tile 1: output voltage, current, watts
     lv_tile_output = lv_obj_create(lv_tileview, NULL);
@@ -401,12 +402,13 @@ static void lvAppCreate(void) {
     // tile_status: input voltage, temps, status code
     lv_tile_status = lv_obj_create(lv_tileview, NULL);
     lv_obj_set_size(lv_tile_status, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(lv_tile_status, LV_HOR_RES, 0);
     lv_tileview_add_element(lv_tileview, lv_tile_status);
 
     // tile_vars: all available status values, in a list
     lv_tile_vars = lv_list_create(lv_tileview, NULL);
     lv_obj_set_size(lv_tile_vars, LV_HOR_RES, LV_VER_RES);
-    lv_obj_set_pos(lv_tile_vars, 0, LV_VER_RES);
+    lv_obj_set_pos(lv_tile_vars, LV_HOR_RES * 2, 0);
     lv_list_set_scroll_propagation(lv_tile_vars, true);
     lv_list_set_scrollbar_mode(lv_tile_vars, LV_SCROLLBAR_MODE_OFF);
 
@@ -424,12 +426,18 @@ static void lvAppCreate(void) {
     lv_t3_labels.temp = lv_list_get_btn_label(lv_t3_btns.temp);
     lv_t3_labels.wout = lv_list_get_btn_label(lv_t3_btns.wout);
 
+    lv_obj_align(lv_t3_labels.vin, NULL, LV_ALIGN_IN_LEFT_MID, 0, 0);
+    lv_obj_align(lv_t3_labels.vout, NULL, LV_ALIGN_IN_LEFT_MID, 0, 0);
+    lv_obj_align(lv_t3_labels.iout, NULL, LV_ALIGN_IN_LEFT_MID, 0, 0);
+    lv_obj_align(lv_t3_labels.temp, NULL, LV_ALIGN_IN_LEFT_MID, 0, 0);
+    lv_obj_align(lv_t3_labels.wout, NULL, LV_ALIGN_IN_LEFT_MID, 0, 0);
+
     // set up fp2 value update lvgl task
     lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
     // switch to the new screen, for testing, because EFFORT
-    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 0, false);
-    lv_tileview_set_tile_act(lv_tileview, 1, 1, LV_ANIM_ON);
+    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 1000, false);
+    lv_tileview_set_tile_act(lv_tileview, 2, 0, LV_ANIM_ON);
 }
 
 // lvgl event callbacks
@@ -465,7 +473,7 @@ void twaiCtrlTask(void *ignore) {
     // temporarary fixed setpoints
     fp2Set.vset   = 4800;         // 48 volts DC
     fp2Set.vmeas  = fp2Set.vset;  // no feedback
-    fp2Set.vovp   = fp2_abs_vmax; // OVP to 57.6V
+    fp2Set.vovp   = fp2_abs_vovp; // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
     fp2Set.iout   = 200;          // 20 amps max because of reasons
     fp2Set.walkin = FP2_WALKIN_5S;
 

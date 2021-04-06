@@ -184,13 +184,13 @@ twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set) {
     twai_message_t txMsg;
     // feed data to message
     txMsg.extd             = 1;
-    txMsg.identifier       = (psu->cmd_id | FP2_CMD_SET_OUT);
+    txMsg.identifier       = (0x00ff0000 | FP2_CMD_SET_OUT);
     txMsg.data_length_code = 8;
     txMsg.self             = 0;
     memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
 
-    ESP_LOGI(TAG, "[TX][CMD_SET][%#010x] PSU %02d: Vset %04d Vmeas %04d Vmax %04d Iout %04d",
-             txMsg.identifier, psu->id, set->vset, set->vmeas, set->vovp, set->iout);
+    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#10x", psu->id, set->vset,
+             set->vmeas, set->vovp, set->iout, txMsg.identifier);
     return txMsg;
 }
 

@@ -21,7 +21,7 @@
 // TX message IDs for PSU commands
 #define FP2_CMD_LOGIN     0x05004800
 #define FP2_CMD_SET_DEF   0x05009c00
-#define FP2_CMD_SET_OUT   0x05004004
+#define FP2_CMD_SET_OUT   0x05004005
 #define FP2_CMD_GET_ALARM 0x0500b00c
 
 // RX message IDs from power supply
