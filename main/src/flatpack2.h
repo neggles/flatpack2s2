@@ -10,9 +10,6 @@
 #include "hal/twai_types.h"
 #include <esp_log.h>
 
-// gimme my macros
-#include "macros.h"
-
 // default PSU ID to assign a PSU
 #define FP2_ID_DEFAULT 0x01
 
@@ -34,15 +31,10 @@
 #define FP2_MSG_ALERTS    0x0500BFFC
 
 // status codes (last byte of ID in MSG_STATUS)
-typedef enum {
-    FP2_STATUS_OK     = 0x04, /* PSU status normal, CV mode */
-    FP2_STATUS_WARN   = 0x08, /* PSU status normal, CC mode, triggers warning */
-    FP2_STATUS_ALARM  = 0x0C, /* PSU has a fault, query for fault codes */
-    FP2_STATUS_WALKIN = 0x10  /* PSU is in walk-in / warm-up state (lasts 5s or 60s depending on config) */
-} fp2_status_t;
-
-// walkin rates
-typedef enum { FP2_WALKIN_5S = 0x04, FP2_WALKIN_60S = 0x05 } fp2_walkin_t;
+#define FP2_STATUS_OK     0x04 /* PSU status normal, CV mode */
+#define FP2_STATUS_WARN   0x08 /* PSU status normal, CC mode, triggers warning */
+#define FP2_STATUS_ALERT  0x0C /* PSU has a fault, query for fault codes */
+#define FP2_STATUS_WALKIN 0x10 /* PSU is in walk-in / warm-up state (lasts 5s or 60s depending on config) */
 
 /**
  * Status message payload bytes.
@@ -67,7 +59,6 @@ typedef enum {
     EXHAUST_TEMP_BYTE // Exhaust temperature
 } msg_status_byte_t;
 
-
 /**
  * Set command payload bytes.
  * Send to 0x05XX400Y, XX = PSU ID, Y = 4 for 5s walk-in, 5 for 6s walk-in
@@ -89,7 +80,6 @@ typedef enum {
     VOVP_HIGH_BYTE,  // Vovp high byte
 } cmd_set_byte_t;
 
-
 /**
  * Defaults set command payload bytes.
  * Send to 0x05XX9C00, XX = PSU ID
@@ -102,9 +92,37 @@ typedef enum {
  */
 
 
+// walkin rates
+typedef enum { FP2_WALKIN_5S = 0x04, FP2_WALKIN_60S = 0x05 } fp2_walkin_t;
+
 /**
- * Power supply unit data structure
+ * Power supply unit data structures
  */
+// abusing union to split bytes for me
+typedef struct {
+    union {
+        uint8_t data[8];
+        struct {
+            uint32_t iout : 16;  //< current limit, deciAmps
+            uint32_t vmeas : 16; //< measured PSU output, centiVolts
+            uint32_t vset : 16;  //< setpoint voltage
+            uint32_t vovp : 16;  //< overvoltage protection point
+        };
+    };
+    fp2_walkin_t walkin;
+} fp2_setting_t;
+
+typedef struct {
+    union {
+        uint32_t flags;
+        struct {
+            uint32_t byte1 : 8;
+            uint32_t byte2 : 8;
+            uint32_t reserved : 16;
+        };
+    };
+} fp2_alert_t;
+
 typedef struct {
     uint32_t vac;
     float    vdc;
@@ -112,23 +130,17 @@ typedef struct {
     float    watts;
     uint32_t intake;
     uint32_t exhaust;
-} fp2_sensors_t;
+} fp2_sensor_t;
 
-typedef struct {
-    uint32_t     iset;
-    uint32_t     vset;
-    uint32_t     vmeas;
-    uint32_t     vmax;
-    fp2_walkin_t walkin;
-} fp2_settings_t;
-
+// actual PSU object, combining the above
 typedef struct {
     uint8_t        serial[6]; //< Serial number as hex digits, e.g. 0x120271100871 = SN 120271100871
-    uint32_t       id;
-    uint32_t       cmd_id;
-    fp2_sensors_t  sensors;
-    fp2_settings_t set;
-    fp2_status_t   status;
+    uint32_t       id;        // PSU ID, 0x01-0x3F
+    uint32_t       cmd_id;    // PSU ID left-shifted 16 bits for convenience
+    uint32_t       offset;    //< PSU-specific value for feedback voltage sensing; not implemented
+    uint32_t       status;
+    fp2_sensor_t   sensors;
+    fp2_alert_t    alert;
     twai_message_t msg_login; //< message to send this PSU to log into it
 } flatpack2_t;
 
@@ -141,20 +153,20 @@ extern const char *FP2_LOGIN_TAG;
 /**
  * Function declarations
  */
-
-// process status message
-void processFp2Status(twai_message_t *rxMsg, flatpack2_t *psu);
-
-// process alert message
-void processFp2Alert(twai_message_t *rxMsg, flatpack2_t *psu);
+// log a twai message (fairly generic function)
+void log_twai_msg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_log_level_t errLevel);
 
 // update saved details
-void updateFp2Details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq);
+void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq);
 
-// twai message logging
-void logTwaiMsg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_log_level_t errLevel);
+// process status message
+void fp2_update_status(twai_message_t *rxMsg, flatpack2_t *psu);
 
-void fp2_set_output(flatpack2_t *psu, uint32_t imax, uint32_t vset, uint32_t vmeas, uint32_t vovp)
+// process alert message
+void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu);
 
-    // send set command
-    // void setFp2Output()
+// generate a set command
+twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set);
+
+// generate an alarm get command
+twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId);

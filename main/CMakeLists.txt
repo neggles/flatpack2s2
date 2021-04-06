@@ -1,7 +1,8 @@
 set(project_srcs "src/flatpack2.c" "main.c")
-
-#set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function" "-D LOG_LOCAL_LEVEL=ESP_LOG_DEBUG")
 set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function")
+
+# comment out to set local log level to config level
+list(APPEND extra_compile_args "-D LOG_LOCAL_LEVEL=ESP_LOG_DEBUG")
 
 idf_component_register(
     SRCS "${project_srcs}"
