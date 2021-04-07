@@ -3,16 +3,12 @@
 #include "macros.h"
 
 // * --------------------------- Global Variables --------------------------- */
-/**
- * Log tags
- */
+// Log tags
 const char *TAG           = "fp2";
 const char *FP2_ALERT_TAG = "fp2.Alert";
 const char *FP2_LOGIN_TAG = "fp2.Login";
 
-/**
- * Alert strings
- */
+// Alert strings
 const char *fp2_alerts0_str[] = {"OVS Lockout",        "Primary Module Failure", "Secondary Module Failure",
                                  "Mains Voltage High", "Mains Voltage Low",      "Temperature High",
                                  "Temperature Low",    "Current Over Limit"};
@@ -64,9 +60,9 @@ void log_twai_msg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_l
 /**
  * @brief Process a MSG_LOGIN_REQ or MSG_HELLO and update the flatpack2 object to match
  *
- * @param rxMsg Pointer to twai_message_t
- * @param psu Pointer to flatpack2_t
- * @param isLoginReq true if MSG_LOGIN_REQ, false if MSG_HELLO
+ * @param rxMsg         Pointer to twai_message_t
+ * @param psu           Pointer to flatpack2_t
+ * @param isLoginReq    true if MSG_LOGIN_REQ, false if MSG_HELLO
  */
 void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
     const char *msgType = NULL;
@@ -116,7 +112,7 @@ void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
  * @brief process flatpack2 status message and update the data struct
  *
  * @param rxMsg pointer to twai_message_t received status message
- * @param psu pointer to flatpack2_t this message is for
+ * @param psu   pointer to flatpack2_t this message is for
  */
 void fp2_update_status(twai_message_t *rxMsg, flatpack2_t *psu) {
     psu->sensors.intake  = rxMsg->data[INTAKE_TEMP_BYTE];
@@ -136,7 +132,7 @@ void fp2_update_status(twai_message_t *rxMsg, flatpack2_t *psu) {
  * @brief process flatpack2 alert messages
  *
  * @param rxMsg pointer to twai_message_t received alert message
- * @param psu pointer to flatpack2_t this message is for
+ * @param psu   pointer to flatpack2_t this message is for
  */
 void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu) {
     psu->alert.byte1 = rxMsg->data[3];
@@ -177,16 +173,21 @@ void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu) {
  * @brief generate a set command
  *
  * @param psu       pointer to flatpack2_t
- * @param settings  pointer to fp2_settings_t
+ * @param set  pointer to fp2_settings_t
  * @param txMsg     pointer to twai_message_t to prepare
+ * @return          twai_message_t message to be passed to the tx queue
  */
-twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set) {
-    twai_message_t txMsg;
+twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t broadcast) {
+    twai_message_t txMsg = {0};
     // feed data to message
+    if (broadcast) {
+        txMsg.identifier = (FP2_CMD_ADDR_ALL | FP2_CMD_SET_OUT | set->walkin);
+    } else {
+        txMsg.identifier = (psu->cmd_id | FP2_CMD_SET_OUT | set->walkin);
+    }
+
     txMsg.extd             = 1;
-    txMsg.identifier       = (0x00ff0000 | FP2_CMD_SET_OUT);
     txMsg.data_length_code = 8;
-    txMsg.self             = 0;
     memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
 
     ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#10x", psu->id, set->vset,
@@ -199,16 +200,22 @@ twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set) {
  *
  * @param psu       pointer to flatpack2_t
  * @param msgId     message id of the received message
- * @return twai_message_t message to be passed to the tx queue
+ * @return          twai_message_t message to be passed to the tx queue
  */
-twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId) {
-    twai_message_t txMsg;
+twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId, uint32_t broadcast) {
+    twai_message_t txMsg = {0};
+
+    if (broadcast) {
+        txMsg.identifier = (FP2_CMD_ADDR_ALL | FP2_CMD_ALERTS);
+    } else {
+        txMsg.identifier = (psu->cmd_id | FP2_CMD_ALERTS);
+    }
+
     txMsg.extd             = 1;
-    txMsg.identifier       = (psu->cmd_id | FP2_CMD_GET_ALARM);
     txMsg.data_length_code = 3;
-    txMsg.self             = 0;
     txMsg.data[0]          = 0x08;
     txMsg.data[1]          = LowByte(msgId);
     txMsg.data[2]          = 0x00;
+    ESP_LOGI(TAG, "[TX][CMD_ALERTS]    ID %#04x: status %#04x msgId %#10x", psu->id, txMsg.data[1], txMsg.identifier);
     return txMsg;
 }

@@ -1,0 +1,29 @@
+menu "LVGL GPIO indev pins"
+
+    config SW_L_GPIO
+        int "Button 3 (SW_L) GPIO"
+        default 35
+        help
+            Selects GPIO for SW3 (SW_L)
+
+    config SW_S_GPIO
+        int "Button 4 (SW_S) GPIO"
+        default 36
+        help
+            Selects GPIO for SW4 (SW_S)
+
+    config SW_R_GPIO
+        int "Button 5 (SW_R) GPIO"
+        default 37
+        help
+            Selects GPIO for SW5 (SW_R)
+
+    config SW_B_GPIO
+        int "Button 1 (SW_B/BOOT) GPIO"
+        default 0
+        help
+            Selects GPIO for SW1 (SW_B/BOOT) which is used for BACK while running.
+            NOTE: This does not affect hardware handling of GPIO0, but it does allow assigning a different GPIO
+            to the BACK function in the app.
+
+endmenu # flatpack2s2 Project Configuration

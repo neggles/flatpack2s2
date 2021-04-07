@@ -19,10 +19,11 @@
 #define FP2_STATUS_MASK 0xff00ff00
 
 // TX message IDs for PSU commands
-#define FP2_CMD_LOGIN     0x05004800
-#define FP2_CMD_SET_DEF   0x05009c00
-#define FP2_CMD_SET_OUT   0x05004005
-#define FP2_CMD_GET_ALARM 0x0500b00c
+#define FP2_CMD_LOGIN    0x05004800
+#define FP2_CMD_SET_DEF  0x05009c00
+#define FP2_CMD_SET_OUT  0x05004000 //< must be ORed with fp2_walkin_t
+#define FP2_CMD_ALERTS   0x0500b00c
+#define FP2_CMD_ADDR_ALL 0x00ff0000 //< command address for "all logged-in PSUs"
 
 // RX message IDs from power supply
 #define FP2_MSG_STATUS    0x05004000
@@ -35,6 +36,11 @@
 #define FP2_STATUS_WARN   0x08 /* PSU status normal, CC mode, triggers warning */
 #define FP2_STATUS_ALERT  0x0C /* PSU has a fault, query for fault codes */
 #define FP2_STATUS_WALKIN 0x10 /* PSU is in walk-in / warm-up state (lasts 5s or 60s depending on config) */
+
+// TWAI filter initializer macro
+#define TWAI_FILTER_CONFIG_FP2() \
+    { .acceptance_code = 0x05000000, .acceptance_mask = 0x00FFFFFF, .single_filter = true }
+
 
 /**
  * Status message payload bytes.
@@ -91,14 +97,17 @@ typedef enum {
  * No definition here, this comment is just for note/reference purposes.
  */
 
-
-// walkin rates
-typedef enum { FP2_WALKIN_5S = 0x04, FP2_WALKIN_60S = 0x05 } fp2_walkin_t;
-
 /**
- * Power supply unit data structures
+ * Shared power supply settings structures
  */
-// abusing union to split bytes for me
+
+// walk-in rate - set via last octet of CMD_SET message ID
+typedef enum {
+    FP2_WALKIN_5S  = 0x04, //< 5-second ramp-up
+    FP2_WALKIN_60S = 0x05  //< 60-second ramp-up
+} fp2_walkin_t;
+
+// used to store shared PSU settings; probably doesn't need to be a typedef
 typedef struct {
     union {
         uint8_t data[8];
@@ -112,17 +121,24 @@ typedef struct {
     fp2_walkin_t walkin;
 } fp2_setting_t;
 
+
+/**
+ * Power supply unit data structures
+ */
+
+// convenience structure for PSU's current alert flag bytes
 typedef struct {
     union {
-        uint32_t flags;
         struct {
             uint32_t byte1 : 8;
             uint32_t byte2 : 8;
             uint32_t reserved : 16;
         };
+        uint32_t flags;
     };
 } fp2_alert_t;
 
+// PSU readings
 typedef struct {
     uint32_t vac;
     float    vdc;
@@ -166,7 +182,7 @@ void fp2_update_status(twai_message_t *rxMsg, flatpack2_t *psu);
 void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu);
 
 // generate a set command
-twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set);
+twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t broadcast);
 
 // generate an alarm get command
-twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId);
+twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId, uint32_t broadcast);

@@ -2,6 +2,8 @@
  * Flatpack2s2 ESP32-S2 application
    TODO: This documentation comment block, heh
  */
+// * ----------------------------- SDK components --------------------------- */
+#pragma region includes
 
 // cstd11
 #include <fcntl.h>
@@ -69,9 +71,10 @@
 #include "types.h"
 // flatpack2 functions, types, etc - should probably make this a component
 #include "flatpack2.h"
-
+#pragma endregion includes
 
 // * -------------------- Definitions and static variables ------------------ */
+#pragma region constants
 
 // TZ string for sntp
 #define POSIX_TZ CONFIG_POSIX_TZ
@@ -100,12 +103,6 @@
 #define PROV_TRANSPORT_SOFTAP "softap"
 #define QRCODE_BASE_URL       "https://espressif.github.io/esp-jumpstart/qrcode.html"
 
-// LVGL indev pin definitions
-static const int btn_left  = CONFIG_FP2S2_SW_L_GPIO;
-static const int btn_enter = CONFIG_FP2S2_SW_S_GPIO;
-static const int btn_right = CONFIG_FP2S2_SW_R_GPIO;
-static const int btn_back  = CONFIG_FP2S2_SW_B_GPIO;
-
 // Log tag strings
 static const char *TAG                = "flatpack2s2";
 static const char *LVGL_TAG           = "lvgl";
@@ -127,9 +124,10 @@ static const uint32_t fp2_abs_vmin = CONFIG_FP2_VOUT_MIN;
 static const uint32_t fp2_abs_vmax = CONFIG_FP2_VOUT_MAX;
 static const uint32_t fp2_abs_vovp = fp2_abs_vmax + 150; // 2 volts over max vout seems to work
 static const uint32_t fp2_abs_imax = CONFIG_FP2_IOUT_MAX;
-
+#pragma endregion     constants
 
 // * --------------- Eventgroup, queue, and semaphore handles --------------- */
+#pragma region handles
 
 // General shared event group
 static EventGroupHandle_t appEventGroup;
@@ -155,17 +153,20 @@ static QueueHandle_t xLedQueue;
 
 // LVGL-related
 static SemaphoreHandle_t xLvglMutex; // lvgl2 mutex
+#pragma endregion        handles
 
 
 // * --------------------------- Global Variables --------------------------- */
 // ! Reads and writes to globals are only atomic for 32-bit values !
+#pragma region globals
 
 // esp internal temperature
 static float esp_internal_temp;
 
 // fp2 object
-static flatpack2_t   fp2;
-static fp2_setting_t fp2Set;
+static flatpack2_t   fp2           = {0};
+static fp2_setting_t fp2_settings  = {0};
+static uint32_t      use_broadcast = 1;
 
 // lvgl objects
 static lv_indev_t *gpio_indev;
@@ -195,10 +196,12 @@ struct {
     lv_obj_t *temp;
 } lv_t3_btns;
 
-static lv_obj_t *app_name;
-static lv_obj_t *load_spinner;
+static lv_obj_t * app_name;
+static lv_obj_t * load_spinner;
+#pragma endregion globals
 
 // * ---------------------- Static function prototypes ---------------------- */
+#pragma region prototypes
 
 //  Persistent tasks
 static void twaiCtrlTask(void *ignore);
@@ -219,7 +222,7 @@ static void lv_val_update(lv_task_t *task);
 
 // Callbacks
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
-
+#pragma endregion prototypes
 
 // * -------------------------- Tasks & Functions --------------------------- */
 
@@ -239,6 +242,13 @@ void app_main(void) {
     appEventGroup = xEventGroupCreate();
     assert(appEventGroup != NULL);
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    //!  temporarary fixed setpoints for PSU
+    fp2_settings.vset   = 4800;              // 48 volts DC
+    fp2_settings.vmeas  = fp2_settings.vset; // no feedback
+    fp2_settings.vovp   = fp2_abs_vovp;      // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
+    fp2_settings.iout   = 200;               // 20 amps max because of reasons
+    fp2_settings.walkin = FP2_WALKIN_5S;
 
     //* Initialize NVS partition
     esp_err_t ret = nvs_flash_init();
@@ -464,20 +474,12 @@ void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const cha
 
 /****************************************************************
  * * TWAI control task
- * TODO: maybe make this handle sending commands?
  * TODO: actual dynamic adjustment of setpoint
  */
 void twaiCtrlTask(void *ignore) {
     ESP_LOGI(TWAI_CTRL_TASK_TAG, "ctrl task start");
 
-    // temporarary fixed setpoints
-    fp2Set.vset   = 4800;         // 48 volts DC
-    fp2Set.vmeas  = fp2Set.vset;  // no feedback
-    fp2Set.vovp   = fp2_abs_vovp; // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
-    fp2Set.iout   = 200;          // 20 amps max because of reasons
-    fp2Set.walkin = FP2_WALKIN_5S;
-
-    // TWAI_EN transceiver enable GPIO config
+    // Configure transceiver enable pin and disable transceiver
     static const gpio_config_t twai_en_conf = {
         .pin_bit_mask = TWAI_EN_GPIO_SEL,
         .mode         = GPIO_MODE_OUTPUT,
@@ -485,24 +487,36 @@ void twaiCtrlTask(void *ignore) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
     };
-
-    // TWAI controller configuration; 125kbps, all msgIDs are 0x05xxxxxx
-    static const twai_general_config_t fp2_twai_g_config =
-        TWAI_GENERAL_CONFIG_DEFAULT(CONFIG_TWAI_TX_GPIO, CONFIG_TWAI_RX_GPIO, TWAI_MODE_NORMAL);
-#ifdef CONFIG_TWAI_ISR_IN_IRAM
-    fp2_twai_g_config.intr_flags = ESP_INTR_FLAG_IRAM;
-#endif // CONFIG_TWAI_ISR_IN_IRAM
-    static const twai_timing_config_t fp2_twai_t_config = TWAI_TIMING_CONFIG_125KBITS();
-    static const twai_filter_config_t fp2_twai_f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
-    // Configure transceiver enable pin and disable transceiver
     ESP_ERROR_CHECK(gpio_config(&twai_en_conf));
     gpio_set_level(TWAI_EN_GPIO, 1);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    ESP_LOGD(TWAI_CTRL_TASK_TAG, "Transceiver disabled");
+
+    // TWAI controller configuration
+#ifdef CONFIG_TWAI_ISR_IN_IRAM
+    static const twai_general_config_t fp2_twai_g_config =
+        TWAI_GENERAL_CONFIG_IRAM(CONFIG_TWAI_TX_GPIO, CONFIG_TWAI_RX_GPIO, TWAI_MODE_NORMAL);
+#else
+    static const twai_general_config_t fp2_twai_g_config =
+        TWAI_GENERAL_CONFIG_DEFAULT(CONFIG_TWAI_TX_GPIO, CONFIG_TWAI_RX_GPIO, TWAI_MODE_NORMAL);
+#endif // CONFIG_TWAI_ISR_IN_IRAM
+
+    // 125kbps
+    static const twai_timing_config_t fp2_twai_t_config = TWAI_TIMING_CONFIG_125KBITS();
+
+    // TWAI message filter
+#ifdef CONFIG_TWAI_USE_FP2_FILTER
+    static const twai_filter_config_t fp2_twai_f_config = TWAI_FILTER_CONFIG_FP2();
+#else
+    static const twai_filter_config_t fp2_twai_f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+#endif
+
+    // enabled TWAI alerts
+    uint32_t fp2_twai_a_config = (TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL |
+                                  TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
 
     // Install TWAI driver
     ESP_ERROR_CHECK_WITHOUT_ABORT(twai_driver_install(&fp2_twai_g_config, &fp2_twai_t_config, &fp2_twai_f_config));
-    ESP_LOGD(TWAI_CTRL_TASK_TAG, "TWAI driver and enable pin configured");
+    ESP_LOGD(TWAI_CTRL_TASK_TAG, "Driver configured");
 
     // Enable transceiver and wait for wakeup; 2ms should be more than enough for any transceiver
     gpio_set_level(TWAI_EN_GPIO, 0);
@@ -517,15 +531,11 @@ void twaiCtrlTask(void *ignore) {
     };
     ESP_LOGD(TWAI_CTRL_TASK_TAG, "Driver started");
 
-    // reconfigure TWAI alerts
-    uint32_t fp2_twai_a_config = (TWAI_ALERT_ERR_ACTIVE | TWAI_ALERT_ARB_LOST | TWAI_ALERT_RX_QUEUE_FULL |
-                                  TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF);
-
     twai_reconfigure_alerts(fp2_twai_a_config, NULL);
-    ESP_LOGD(TWAI_CTRL_TASK_TAG, "Alert configuration set");
+    ESP_LOGD(TWAI_CTRL_TASK_TAG, "Alerts configured");
 
     xEventGroupSetBits(appEventGroup, TWAI_CTRL_RUN_BIT);
-    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Initialization complete");
+    ESP_LOGI(TWAI_CTRL_TASK_TAG, "Initialization complete, starting tasks");
 
     // create RX task
     TaskHandle_t rxTaskHandle;
@@ -536,11 +546,12 @@ void twaiCtrlTask(void *ignore) {
     xTwaiTxQueue = xQueueCreate(10, sizeof(twai_message_t));
     xTaskCreate(&twaiTxTask, "twaiTxTask", 1024 * 8, NULL, 5, &txTaskHandle);
 
+    ESP_LOGD(TWAI_CTRL_TASK_TAG, "Tasks created, entering monitoring loop");
+
     // handle alerts and print status
     while (true) {
         esp_err_t err;
-
-        uint32_t alerts;
+        uint32_t  alerts;
         err = twai_read_alerts(&alerts, pdMS_TO_TICKS(TWAI_RX_TIMEOUT_SEC * 1000));
         if (err == ESP_OK) {
             // we have some alerts to read
@@ -566,7 +577,7 @@ void twaiCtrlTask(void *ignore) {
                 continue;
             }
             if (alerts & TWAI_ALERT_BUS_RECOVERED) {
-                ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] Bus recovery complete! Restarting driver");
+                ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] Bus recovered, restarting driver");
                 for (int i = 0; i < 3; i++) {
                     twai_reconfigure_alerts(fp2_twai_a_config, NULL);
                     esp_err_t err = twai_start();
@@ -576,23 +587,23 @@ void twaiCtrlTask(void *ignore) {
                         vTaskResume(rxTaskHandle);
                         break;
                     } else {
-                        ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] TWAI restart attempt %d failed, retrying in 3s...",
-                                 i + 1);
+                        ESP_LOGE(TWAI_CTRL_TASK_TAG, "[RECOVERY] restart attempt %d failed, retrying in 3s...", i + 1);
                         vTaskDelay(pdMS_TO_TICKS(3000));
                     }
                 }
             }
         } else if (err != ESP_ERR_TIMEOUT) {
+            // something else has gone wrong here
             const char *alert_err_string = esp_err_to_name(err);
-            ESP_LOGE(TWAI_CTRL_TASK_TAG, "Retrieving TWAI alerts failed! %s", alert_err_string);
+            ESP_LOGE(TWAI_CTRL_TASK_TAG, "[ERROR] Retrieving TWAI alerts failed! %s", alert_err_string);
         }
         // get and log status, regardless of whether we succeeded or failed
         twai_status_info_t status;
         twai_get_status_info(&status);
-        ESP_LOGD(TWAI_CTRL_TASK_TAG, "[TWAI] state=%d arb=%d err=%d [TX] q=%d err=%d fail=%d [RX] q=%d err=%d miss=%d",
-                 (int)status.state, status.arb_lost_count, status.bus_error_count, status.msgs_to_tx,
-                 status.tx_error_counter, status.tx_failed_count, status.msgs_to_rx, status.rx_error_counter,
-                 status.rx_missed_count);
+        ESP_LOGD(TWAI_CTRL_TASK_TAG,
+                 "[STATUS] state=%d arb=%d err=%d [TX] q=%d err=%d fail=%d [RX] q=%d err=%d miss=%d", (int)status.state,
+                 status.arb_lost_count, status.bus_error_count, status.msgs_to_tx, status.tx_error_counter,
+                 status.tx_failed_count, status.msgs_to_rx, status.rx_error_counter, status.rx_missed_count);
     }
 
     // tasks should never return or exit, only ask to be killed
@@ -605,7 +616,7 @@ void twaiTxTask(void *ignore) {
     xEventGroupSetBits(appEventGroup, TWAI_TX_RUN_BIT);
 
     while (true) {
-        twai_message_t txMsg;
+        twai_message_t txMsg = {0};
         xQueueReceive(xTwaiTxQueue, &txMsg, portMAX_DELAY);
         for (int i = 0; i < TWAI_TX_RETRIES; i++) {
             esp_err_t txErr;
@@ -632,8 +643,8 @@ void twaiRxTask(void *ignore) {
     // get messages and process the heck out of them
     while (true) {
         // some buffers
-        twai_message_t rxMsg;
-        twai_message_t txMsg;
+        twai_message_t rxMsg = {0};
+        twai_message_t txMsg = {0};
         esp_err_t      rxErr = twai_receive(&rxMsg, portMAX_DELAY);
         if (rxErr == ESP_OK) {
             // will log message at ESP_LOG_WARN level if it doesn't match known IDs
@@ -663,7 +674,7 @@ void twaiRxTask(void *ignore) {
                 case (FP2_MSG_STATUS | FP2_STATUS_WARN):  // 0x08 = CC / warning
                 case (FP2_MSG_STATUS | FP2_STATUS_ALERT): // 0x0C = alert
                     // queue alert request only for these two status values
-                    txMsg = fp2_gen_cmd_alerts(&fp2, rxMsg.identifier);
+                    txMsg = fp2_gen_cmd_alerts(&fp2, rxMsg.identifier, use_broadcast);
                     xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                     // fall through
                 case (FP2_MSG_STATUS | FP2_STATUS_OK):     // 0x04 = CV / normal
@@ -672,7 +683,7 @@ void twaiRxTask(void *ignore) {
                     // process status message payload
                     fp2_update_status(&rxMsg, &fp2);
                     // send a set command
-                    txMsg = fp2_gen_cmd_set(&fp2, &fp2Set);
+                    txMsg = fp2_gen_cmd_set(&fp2, &fp2_settings, use_broadcast);
                     xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                     msgProcessed = true;
                     break;
@@ -688,6 +699,7 @@ void twaiRxTask(void *ignore) {
         } else if (rxErr != ESP_ERR_TIMEOUT) {
             const char *rx_err_string = esp_err_to_name(rxErr);
             ESP_LOGE(TWAI_RX_TASK_TAG, "rxMsg error! %s", rx_err_string);
+            continue;
         }
     }
 

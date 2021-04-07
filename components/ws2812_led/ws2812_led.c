@@ -109,7 +109,7 @@ esp_err_t led_clear(void)
 
 esp_err_t led_init(void)
 {
-    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_FP2S2_RGB_GPIO, RMT_TX_CHANNEL);
+    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_RGB_GPIO, RMT_TX_CHANNEL);
     // set counter clock to 40MHz
     config.clk_div = 2;
 

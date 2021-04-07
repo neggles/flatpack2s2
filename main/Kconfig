@@ -1,15 +1,30 @@
 menu "flatpack2s2 Project Configuration"
 
     menu "System"
+
+        config SNTP_SERVER
+            string "SNTP Server address/hostname"
+            default "pool.ntp.org"
+            help
+                Set default SNTP server used by library if one is not provided by DHCP
+
         config POSIX_TZ
             string "POSIX Time Zone String"
             default "AEST-10AEDT,M10.1.0,M4.1.0/3"
             help
                 POSIX time zone string for system. I might implement a tz db later idk
 
+        config RESET_PROVISIONED
+            bool "Reset Wi-Fi Provisioning Manager state"
+            default n
+            help
+                This erases the NVS to reset provisioned status of the device on every reboot.
+                Provisioned status is determined by the Wi-Fi STA configuration, saved on the NVS.
+
     endmenu #System
 
     menu "TWAI"
+
         config TWAI_TX_GPIO
             int "TWAI TX GPIO"
             default 15
@@ -28,14 +43,23 @@ menu "flatpack2s2 Project Configuration"
             help
                 Selects GPIO used for TWAI (CAN) bus transceiver enable. Connect to your CAN transciever.
 
-        config TWAI_EN_ACTIVE_STATE
-            int "TWAI_EN output state when transceiver is active"
-            default 0
-            range 0 1
+        config TWAI_EN_ACTIVE_LOW
+            bool "TWAI_EN output state when transceiver is active"
+            default y
             help
-                0 = TWAI_EN will be driven low to enable the transceiver and high to disable.
-                1 = TWAI_EN will be driven high to enable the transceiver and low to disable.
-                Most transceivers are active-low (0).
+                Most transceiver enable pins are active-low - if yours is active-high, uncheck this box.
+
+        config TWAI_USE_FP2_FILTER
+            bool "Enable flatpack2 TWAI message filter"
+            default y
+            help
+                When enabled, the TWAI driver will filter out CAN messages whose IDs do not match 0x05xxxxxx
+                Disable if you're not receiving any messages, or for debugging.
+
+        config TWAI_EN_ACTIVE_STATE
+            int
+            default 0 if TWAI_EN_ACTIVE_LOW=y
+            default 1 if TWAI_EN_ACTIVE_LOW=n
 
     endmenu #TWAI
 
@@ -69,43 +93,24 @@ menu "flatpack2s2 Project Configuration"
             help
                 Enter your power supply's rated maximum voltage, in centiVolts (Volts * 100)
 
+        config FP2_VOUT_OVP
+            int "Flatpack2 PSU over-voltage protection setpoint"
+            default 5950
+            help
+                Level to set for PSU over-voltage protection, in centiVolts (Volts * 100)
+                Typically 1.5-2V higher than rated maximum voltage.
+
         config FP2_IOUT_MAX
             int "Flatpack2 PSU rated maximum current"
-            default 4170
+            default 417
             help
-                Enter your power supply's rated maximum current, in deciAmps (Amps * 100)
+                Enter your power supply's rated maximum current, in deciAmps (Amps * 10)
 
     endmenu #flatpack2
 
     menu "misc. GPIOs"
 
-        config FP2S2_SW_L_GPIO
-            int "Button 3 (SW_L) GPIO"
-            default 35
-            help
-                Selects GPIO for SW3 (SW_L)
-
-        config FP2S2_SW_S_GPIO
-            int "Button 4 (SW_S) GPIO"
-            default 36
-            help
-                Selects GPIO for SW4 (SW_S)
-
-        config FP2S2_SW_R_GPIO
-            int "Button 5 (SW_R) GPIO"
-            default 37
-            help
-                Selects GPIO for SW5 (SW_R)
-
-        config FP2S2_SW_B_GPIO
-            int "Button 1 (SW_B/BOOT) GPIO"
-            default 0
-            help
-                Selects GPIO for SW1 (SW_B/BOOT) which is used for BACK while running.
-                NOTE: This does not affect hardware handling of GPIO0, but it does allow assigning a different GPIO
-                to the BACK function in the app.
-
-        config FP2S2_RGB_GPIO
+        config RGB_GPIO
             int "WS2812B RGB LED GPIO"
             default 38
             help
@@ -114,29 +119,3 @@ menu "flatpack2s2 Project Configuration"
     endmenu #misc. GPIOs
 
 endmenu # flatpack2s2
-
-menu "Component config"
-    menu "Wi-Fi Provisioning Manager"
-
-        config FP2S2_RESET_PROVISIONED
-            bool
-            default n
-            prompt "Reset provisioned status of the device"
-            help
-                This erases the NVS to reset provisioned status of the device on every reboot.
-                Provisioned status is determined by the Wi-Fi STA configuration, saved on the NVS.
-
-    endmenu # Wi-Fi Provisioning Manager
-endmenu # Component config
-
-menu "LWIP"
-    menu "SNTP"
-
-        config SNTP_SERVER
-            string "SNTP Server address/hostname"
-            default "pool.ntp.org"
-            help
-                Set default SNTP server used by library if one is not provided by DHCP
-
-    endmenu # SNTP
-endmenu # LWIP
