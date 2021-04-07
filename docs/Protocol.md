@@ -69,7 +69,9 @@ A supply that is not logged in will send this packet every two seconds or so.
 # PSU-specific Messages
 These messages contain the PSU's assigned ID number, `XX`, in their message ID.
 
-In theory you can also control multiple supplies at once (if they're logged in) by sending to ID `0xFF` but I've not tested that.
+Sending messages to ID `0xFF` will command *all* power supplies on the bus - I think this only works for the 'Set voltage and current limits' command, untested.
+
+At the moment I actually can't get single-supply commands to work at all, so that's... odd.
 
 
 ## **MSG** Status, `0x05XX40YY`

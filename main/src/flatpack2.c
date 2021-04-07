@@ -39,7 +39,7 @@ void log_twai_msg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_l
 
     // print message into buffer and log at appropriate level
     char buf[100];
-    snprintf(buf, sizeof(buf), "[%s][%s] ID %#010x, len=%.2d, extd=%.1d, rtr=%.1d, dlc_non_comp=%.1d", msgDir, msgType,
+    snprintf(buf, sizeof(buf), "[%s][%s] ID %#010x\tlen:%.2d\textd:%.1d\trtr:%.1d\tdlc_nc=%.1d", msgDir, msgType,
              twaiMsg->identifier, twaiMsg->data_length_code, twaiMsg->extd, twaiMsg->rtr, twaiMsg->dlc_non_comp);
     switch (errLevel) {
         case ESP_LOG_VERBOSE: ESP_LOGV(TAG, "%s", buf); break;
@@ -66,7 +66,7 @@ void log_twai_msg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_l
  */
 void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
     const char *msgType = NULL;
-    msgType = isLoginReq ? "LOGIN_REQ" : "HELLO";
+    msgType             = isLoginReq ? "LOGIN_REQ" : "HELLO";
 
     // set basics of msg_login
     psu->msg_login.extd             = 1;
@@ -76,21 +76,21 @@ void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
         ESP_LOGI(FP2_LOGIN_TAG, "[RX][%s] Saved PSU SN mismatch, updating", msgType);
 
         // update PSU ID
-        if (isLoginReq) {
+        if (isLoginReq == 1) {
             // MSG_LOGIN_REQ doesn't have a PSU ID for us to extract, default to ID FP2_ID_DEFAULT
             psu->id     = FP2_ID_DEFAULT;
-            psu->cmd_id = (FP2_ID_DEFAULT << 16);
+            psu->cmd_id = (FP2_ID_DEFAULT << 18);
         } else {
             // Extract existing PSU ID from MSG_HELLO
             psu->id     = (rxMsg->identifier & 0x00ff0000) >> 18;
-            psu->cmd_id = (rxMsg->identifier & 0x00ff0000) >> 2;
+            psu->cmd_id = (rxMsg->identifier & 0x00ff0000);
         }
 
         // update serial number
         memcpy(&psu->serial[0], &rxMsg->data[isLoginReq], sizeof(psu->serial));
 
         // update msg_login identifier and payload
-        psu->msg_login.identifier = FP2_CMD_LOGIN | (psu->id << 2);
+        psu->msg_login.identifier = (psu->id << 2) | FP2_CMD_LOGIN;
         memcpy(&psu->msg_login.data[0], &rxMsg->data[isLoginReq], sizeof(psu->serial));
 
         // print device found message, warning log level so it stands out
@@ -169,8 +169,8 @@ void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu) {
  * @brief generate a set command
  *
  * @param psu       pointer to flatpack2_t
- * @param set  pointer to fp2_settings_t
- * @param txMsg     pointer to twai_message_t to prepare
+ * @param set       pointer to fp2_settings_t
+ * @param broadcast true if we're addressing this to ID 0xFF, false if PSU-specific
  * @return          twai_message_t message to be passed to the tx queue
  */
 twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t broadcast) {
@@ -183,11 +183,12 @@ twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t br
     }
 
     txMsg.extd             = 1;
+    txMsg.self             = 0;
     txMsg.data_length_code = 8;
     memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
 
-    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id, set->vset,
-             set->vmeas, set->vovp, set->iout, txMsg.identifier);
+    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id,
+             set->vset, set->vmeas, set->vovp, set->iout, txMsg.identifier);
     return txMsg;
 }
 
@@ -208,10 +209,38 @@ twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId, uint32_t bro
     }
 
     txMsg.extd             = 1;
+    txMsg.self             = 0;
     txMsg.data_length_code = 3;
     txMsg.data[0]          = 0x08;
     txMsg.data[1]          = LowByte(msgId);
     txMsg.data[2]          = 0x00;
     ESP_LOGI(TAG, "[TX][CMD_ALERTS]    ID %#04x: status %#04x msgId %#010x", psu->id, txMsg.data[1], txMsg.identifier);
+    return txMsg;
+}
+
+/**
+ * @brief generate a set defaults command
+ *
+ * @param psu       pointer to flatpack2_t
+ * @param set       pointer to fp2_settings_t
+ * @param broadcast true if we're addressing this to ID 0xFF, false if PSU-specific
+ * @return          twai_message_t message to be passed to the tx queue
+ */
+twai_message_t fp2_gen_cmd_defaults(flatpack2_t *psu, fp2_setting_t *set, uint32_t broadcast) {
+    twai_message_t txMsg = {0};
+    // feed data to message
+    if (broadcast == 1) {
+        txMsg.identifier = (FP2_CMD_ADDR_ALL | FP2_CMD_SET_DEF);
+    } else {
+        txMsg.identifier = (psu->cmd_id | FP2_CMD_SET_DEF);
+    }
+
+    txMsg.extd             = 1;
+    txMsg.self             = 0;
+    txMsg.data_length_code = 8;
+    memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
+
+    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id,
+             set->vset, set->vmeas, set->vovp, set->iout, txMsg.identifier);
     return txMsg;
 }

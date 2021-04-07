@@ -90,7 +90,7 @@
 #define TWAI_TX_TIMEOUT_SEC 1
 #define TWAI_RX_TIMEOUT_SEC 10
 #define TWAI_TX_RETRIES     3
-#define TWAI_MSG_LOG_ALL    0
+#define TWAI_MSG_LOG_ALL    1
 
 // interval for internal temp sensor measurements
 #define ESP_TEMP_POLL_SEC 10
@@ -122,7 +122,7 @@ static const char *TIMESYNC_TASK_TAG  = "sntp";
 // ! see also: src/flatpack2.h
 static const uint32_t fp2_abs_vmin = CONFIG_FP2_VOUT_MIN;
 static const uint32_t fp2_abs_vmax = CONFIG_FP2_VOUT_MAX;
-static const uint32_t fp2_abs_vovp = fp2_abs_vmax + 150; // 2 volts over max vout seems to work
+static const uint32_t fp2_abs_vovp = CONFIG_FP2_VOUT_OVP; // 2 volts over max vout seems to work
 static const uint32_t fp2_abs_imax = CONFIG_FP2_IOUT_MAX;
 #pragma endregion     constants
 
@@ -658,9 +658,6 @@ void twaiRxTask(void *ignore) {
                 fp2_save_details(&rxMsg, &fp2, 1);
                 // send login request
                 xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
-                txMsg = fp2_gen_cmd_set(&fp2, &fp2_settings, fp2_settings.broadcast);
-                // send set request, then restart loop
-                xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                 continue;
             }
 
