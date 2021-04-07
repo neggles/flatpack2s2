@@ -66,11 +66,7 @@ void log_twai_msg(twai_message_t *twaiMsg, int is_tx, const char *msgType, esp_l
  */
 void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
     const char *msgType = NULL;
-    if (isLoginReq) {
-        msgType = "LOGIN_REQ";
-    } else {
-        msgType = "HELLO";
-    }
+    msgType = isLoginReq ? "LOGIN_REQ" : "HELLO";
 
     // set basics of msg_login
     psu->msg_login.extd             = 1;
@@ -86,8 +82,8 @@ void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
             psu->cmd_id = (FP2_ID_DEFAULT << 16);
         } else {
             // Extract existing PSU ID from MSG_HELLO
-            psu->id     = (rxMsg->identifier >> 18) & 0xff;
-            psu->cmd_id = ((psu->id << 16) & 0x00ff0000);
+            psu->id     = (rxMsg->identifier & 0x00ff0000) >> 18;
+            psu->cmd_id = (rxMsg->identifier & 0x00ff0000) >> 2;
         }
 
         // update serial number
@@ -180,7 +176,7 @@ void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu) {
 twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t broadcast) {
     twai_message_t txMsg = {0};
     // feed data to message
-    if (broadcast) {
+    if (broadcast == 1) {
         txMsg.identifier = (FP2_CMD_ADDR_ALL | FP2_CMD_SET_OUT | set->walkin);
     } else {
         txMsg.identifier = (psu->cmd_id | FP2_CMD_SET_OUT | set->walkin);
@@ -190,7 +186,7 @@ twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t br
     txMsg.data_length_code = 8;
     memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
 
-    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#10x", psu->id, set->vset,
+    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id, set->vset,
              set->vmeas, set->vovp, set->iout, txMsg.identifier);
     return txMsg;
 }
@@ -205,7 +201,7 @@ twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t br
 twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId, uint32_t broadcast) {
     twai_message_t txMsg = {0};
 
-    if (broadcast) {
+    if (broadcast == 1) {
         txMsg.identifier = (FP2_CMD_ADDR_ALL | FP2_CMD_ALERTS);
     } else {
         txMsg.identifier = (psu->cmd_id | FP2_CMD_ALERTS);
@@ -216,6 +212,6 @@ twai_message_t fp2_gen_cmd_alerts(flatpack2_t *psu, uint32_t msgId, uint32_t bro
     txMsg.data[0]          = 0x08;
     txMsg.data[1]          = LowByte(msgId);
     txMsg.data[2]          = 0x00;
-    ESP_LOGI(TAG, "[TX][CMD_ALERTS]    ID %#04x: status %#04x msgId %#10x", psu->id, txMsg.data[1], txMsg.identifier);
+    ESP_LOGI(TAG, "[TX][CMD_ALERTS]    ID %#04x: status %#04x msgId %#010x", psu->id, txMsg.data[1], txMsg.identifier);
     return txMsg;
 }

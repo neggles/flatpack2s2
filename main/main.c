@@ -164,9 +164,8 @@ static SemaphoreHandle_t xLvglMutex; // lvgl2 mutex
 static float esp_internal_temp;
 
 // fp2 object
-static flatpack2_t   fp2           = {0};
-static fp2_setting_t fp2_settings  = {0};
-static uint32_t      use_broadcast = 1;
+static flatpack2_t   fp2          = {0};
+static fp2_setting_t fp2_settings = {0};
 
 // lvgl objects
 static lv_indev_t *gpio_indev;
@@ -244,11 +243,12 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     //!  temporarary fixed setpoints for PSU
-    fp2_settings.vset   = 4800;              // 48 volts DC
-    fp2_settings.vmeas  = fp2_settings.vset; // no feedback
-    fp2_settings.vovp   = fp2_abs_vovp;      // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
-    fp2_settings.iout   = 200;               // 20 amps max because of reasons
-    fp2_settings.walkin = FP2_WALKIN_5S;
+    fp2_settings.vset      = 4800;              // 48 volts DC
+    fp2_settings.vmeas     = fp2_settings.vset; // no feedback
+    fp2_settings.vovp      = fp2_abs_vovp;      // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
+    fp2_settings.iout      = 200;               // 20 amps max because of reasons
+    fp2_settings.walkin    = FP2_WALKIN_5S;
+    fp2_settings.broadcast = 0;
 
     //* Initialize NVS partition
     esp_err_t ret = nvs_flash_init();
@@ -656,8 +656,11 @@ void twaiRxTask(void *ignore) {
                 if (TWAI_MSG_LOG_ALL) log_twai_msg(&rxMsg, 0, "LOGIN_REQ", ESP_LOG_DEBUG);
                 // updated saved PSU details
                 fp2_save_details(&rxMsg, &fp2, 1);
-                // send login request, then restart loop
+                // send login request
                 xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
+                txMsg = fp2_gen_cmd_set(&fp2, &fp2_settings, fp2_settings.broadcast);
+                // send set request, then restart loop
+                xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                 continue;
             }
 
@@ -669,12 +672,15 @@ void twaiRxTask(void *ignore) {
                     fp2_save_details(&rxMsg, &fp2, 0);
                     // send a login request
                     xQueueSendToFront(xTwaiTxQueue, &fp2.msg_login, portMAX_DELAY);
+                    txMsg = fp2_gen_cmd_set(&fp2, &fp2_settings, fp2_settings.broadcast);
+                    // send set request, then restart loop
+                    xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                     msgProcessed = true;
                     break;
                 case (FP2_MSG_STATUS | FP2_STATUS_WARN):  // 0x08 = CC / warning
                 case (FP2_MSG_STATUS | FP2_STATUS_ALERT): // 0x0C = alert
                     // queue alert request only for these two status values
-                    txMsg = fp2_gen_cmd_alerts(&fp2, rxMsg.identifier, use_broadcast);
+                    txMsg = fp2_gen_cmd_alerts(&fp2, rxMsg.identifier, fp2_settings.broadcast);
                     xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                     // fall through
                 case (FP2_MSG_STATUS | FP2_STATUS_OK):     // 0x04 = CV / normal
@@ -683,7 +689,7 @@ void twaiRxTask(void *ignore) {
                     // process status message payload
                     fp2_update_status(&rxMsg, &fp2);
                     // send a set command
-                    txMsg = fp2_gen_cmd_set(&fp2, &fp2_settings, use_broadcast);
+                    txMsg = fp2_gen_cmd_set(&fp2, &fp2_settings, fp2_settings.broadcast);
                     xQueueSend(xTwaiTxQueue, &txMsg, portMAX_DELAY);
                     msgProcessed = true;
                     break;

@@ -38,6 +38,7 @@
 #define FP2_STATUS_WALKIN 0x10 /* PSU is in walk-in / warm-up state (lasts 5s or 60s depending on config) */
 
 // TWAI filter initializer macro
+// TODO: make this work... it worked before...
 #define TWAI_FILTER_CONFIG_FP2() \
     { .acceptance_code = 0x05000000, .acceptance_mask = 0x00FFFFFF, .single_filter = true }
 
@@ -118,6 +119,7 @@ typedef struct {
             uint32_t vovp : 16;  //< overvoltage protection point
         };
     };
+    uint32_t     broadcast;
     fp2_walkin_t walkin;
 } fp2_setting_t;
 
