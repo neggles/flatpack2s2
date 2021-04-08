@@ -1,6 +1,9 @@
 set(project_srcs "src/flatpack2.c" "main.c")
 set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function")
 
+# debug!
+#list(APPEND project_srcs "src/debug.c")
+
 # gcc8 doesn't know about #pragma region
 list(APPEND extra_compile_args "-Wno-unknown-pragmas")
 

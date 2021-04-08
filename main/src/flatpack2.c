@@ -240,7 +240,7 @@ twai_message_t fp2_gen_cmd_defaults(flatpack2_t *psu, fp2_setting_t *set, uint32
     txMsg.data_length_code = 8;
     memcpy(&txMsg.data[0], &set->data[0], txMsg.data_length_code);
 
-    ESP_LOGI(TAG, "[TX][CMD_SET]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id,
+    ESP_LOGI(TAG, "[TX][CMD_DEF]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id,
              set->vset, set->vmeas, set->vovp, set->iout, txMsg.identifier);
     return txMsg;
 }

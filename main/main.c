@@ -7,6 +7,7 @@
 
 // cstd11
 #include <fcntl.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,13 +147,17 @@ static const int TIME_VALID_BIT     = BIT12;
 static const int FP2_FOUND_BIT      = BIT13;
 static const int FP2_SET_REQ_BIT    = BIT14;
 
+// lvgl checks these before moving off the loading screen
+static const int ALL_RUN_BITS = (DISP_RUN_BIT | TWAI_ALL_RUN_BITS | CONSOLE_RUN_BIT | LED_RUN_BIT | TEMP_RUN_BIT |
+                                 WIFI_CONNECTED_BIT | TIMESYNC_RUN_BIT);
+
 
 // Task Queues
 static QueueHandle_t xTwaiTxQueue;
 static QueueHandle_t xLedQueue;
 
 // LVGL-related
-static SemaphoreHandle_t xLvglMutex; // lvgl2 mutex
+static SemaphoreHandle_t xLvglMutex;
 #pragma endregion        handles
 
 
@@ -218,12 +223,22 @@ static void twaiTxTask(void *ignore);
 static void initialiseConsole(void);
 static void lvAppCreate(void);
 static void lv_val_update(lv_task_t *task);
+static void lv_check_startup(lv_task_t *task);
 
 // Callbacks
 static void cb_lvglLog(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
 #pragma endregion prototypes
 
 // * -------------------------- Tasks & Functions --------------------------- */
+
+void set_fp2_output(void) {
+    fp2_settings.vset      = 4800;              // 48 volts DC
+    fp2_settings.vmeas     = fp2_settings.vset; // no feedback
+    fp2_settings.vovp      = fp2_abs_vovp;      // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
+    fp2_settings.iout      = 200;               // 20 amps max because of reasons
+    fp2_settings.walkin    = FP2_WALKIN_5S;
+    fp2_settings.broadcast = 0;
+}
 
 /****************************************************************
  * * app_main function - run on startup
@@ -242,14 +257,6 @@ void app_main(void) {
     assert(appEventGroup != NULL);
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    //!  temporarary fixed setpoints for PSU
-    fp2_settings.vset      = 4800;              // 48 volts DC
-    fp2_settings.vmeas     = fp2_settings.vset; // no feedback
-    fp2_settings.vovp      = fp2_abs_vovp;      // OVP to CONFIG_FP2_VOUT_MAX + 1.5V
-    fp2_settings.iout      = 200;               // 20 amps max because of reasons
-    fp2_settings.walkin    = FP2_WALKIN_5S;
-    fp2_settings.broadcast = 0;
-
     //* Initialize NVS partition
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -259,6 +266,9 @@ void app_main(void) {
         /* Retry nvs_flash_init */
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    //!  temporarary fixed setpoints for PSU
+    set_fp2_output();
 
     //* start the command-line console task and wait for init
     xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 10, NULL);
@@ -445,8 +455,10 @@ static void lvAppCreate(void) {
     // set up fp2 value update lvgl task
     lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
-    // switch to the new screen, for testing, because EFFORT
-    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 1000, false);
+    // set up "move off home screen" task
+    lv_task_t *lv_check_startup_task = lv_task_create(lv_check_startup, 100, LV_TASK_PRIO_MID, NULL);
+
+    // set active tile, temporarily
     lv_tileview_set_tile_act(lv_tileview, 2, 0, LV_ANIM_ON);
 }
 
@@ -457,6 +469,15 @@ void lv_val_update(lv_task_t *task) {
     lv_label_set_text_fmt(lv_t3_labels.iout, "Iout: %4.1fA", fp2.sensors.amps);
     lv_label_set_text_fmt(lv_t3_labels.temp, "Temp: I %2d°C O %2d°C", fp2.sensors.intake, fp2.sensors.exhaust);
     lv_label_set_text_fmt(lv_t3_labels.wout, "Wout: %4.1fW", fp2.sensors.watts);
+}
+
+void lv_check_startup(lv_task_t *task) {
+    EventBits_t appEventGroupBits = xEventGroupGetBits(appEventGroup);
+    if ((appEventGroupBits & ALL_RUN_BITS) == ALL_RUN_BITS) {
+        cb_lvglLog(LV_LOG_LEVEL_INFO, __FILE__, __LINE__, "lv_check_startup", "app is running, exiting load screen");
+        lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 1000, false);
+        lv_task_del(task);
+    }
 }
 
 // lvgl log callback

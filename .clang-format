@@ -8,6 +8,7 @@
   AlignConsecutiveAssignments: true,
   AlignConsecutiveDeclarations: true,
   AlignConsecutiveMacros: true,
+  AlignConsecutiveBitFields: true,
   AlignEscapedNewlines: Left,
   AllowAllParametersOfDeclarationOnNextLine: true,
   AllowShortFunctionsOnASingleLine: Empty,
