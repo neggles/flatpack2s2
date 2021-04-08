@@ -17,6 +17,14 @@ const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure",    
                                  "Fan 3 Speed Low",        "Internal Voltage Fault"};
 
 
+static const fp2_status_code_t fp2_status_table[] = {
+    {FP2_STATUS_OK, "OK/CV"},
+    {FP2_STATUS_WARN, "WARN/CC"},
+    {FP2_STATUS_ALERT, "ALERT"},
+    {FP2_STATUS_WALKIN, "WALK-IN"}
+};
+
+
 // * ------------------------------ Functions ------------------------------- */
 
 /**
@@ -243,4 +251,20 @@ twai_message_t fp2_gen_cmd_defaults(flatpack2_t *psu, fp2_setting_t *set, uint32
     ESP_LOGI(TAG, "[TX][CMD_DEF]    ID %#04x: Vset %04d Vmeas %04d Vmax %04d Iout %04d msgId %#010x", psu->id,
              set->vset, set->vmeas, set->vovp, set->iout, txMsg.identifier);
     return txMsg;
+}
+
+/**
+ * @brief converts a flatpack2 status code 0xYY to a string
+ *
+ * @param code          the code to convert
+ * @return const char*  pointer to the string representation
+ */
+const char *fp2_status_to_str(fp2_status_t code) {
+    size_t i;
+    for (i = 0; i < sizeof(fp2_status_table) / sizeof(fp2_status_table[0]); ++i) {
+        if (fp2_status_table[i].code == code) {
+            return fp2_status_table[i].msg;
+        }
+    }
+    return "UNKNOWN";
 }

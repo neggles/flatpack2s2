@@ -6,7 +6,7 @@
   ColumnLimit: 120,
   UseTab: Never,
   AlignConsecutiveAssignments: true,
-  AlignConsecutiveDeclarations: true,
+  AlignConsecutiveDeclarations: false,
   AlignConsecutiveMacros: true,
   AlignConsecutiveBitFields: true,
   AlignEscapedNewlines: Left,

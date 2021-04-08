@@ -167,6 +167,13 @@ extern const char *fp2_alerts1_str[];
 extern const char *FP2_ALERT_TAG;
 extern const char *FP2_LOGIN_TAG;
 
+typedef struct {
+    uint32_t code;
+    const char *msg;
+} fp2_status_code_t;
+
+typedef int32_t fp2_status_t;
+
 /**
  * Function declarations
  */
@@ -181,6 +188,9 @@ void fp2_update_status(twai_message_t *rxMsg, flatpack2_t *psu);
 
 // process alert message
 void fp2_update_alert(twai_message_t *rxMsg, flatpack2_t *psu);
+
+// get status string from status code
+const char *fp2_status_to_str(fp2_status_t code);
 
 // generate a set command
 twai_message_t fp2_gen_cmd_set(flatpack2_t *psu, fp2_setting_t *set, uint32_t broadcast);
