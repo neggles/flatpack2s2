@@ -834,6 +834,7 @@ void consoleTask(void *ignore) {
     initialiseConsole();
     esp_console_register_help_command();
     register_system_common();
+    register_nvs();
 
     /**
      * Prompt to be printed before each line.
@@ -1010,6 +1011,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             case WIFI_PROV_END:
                 /* De-initialize manager once provisioning is finished */
                 wifi_prov_mgr_deinit();
+                esp_wifi_set_mode(WIFI_MODE_STA);
                 break;
             default: break;
         }
@@ -1020,6 +1022,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ESP_LOGI(WIFI_TASK_TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
         /* Signal main application to continue execution */
         xEventGroupSetBits(appEventGroup, WIFI_CONNECTED_BIT);
+        /* disable softAP */
+
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(WIFI_TASK_TAG, "Disconnected. Connecting to the AP again...");
         xEventGroupClearBits(appEventGroup, WIFI_CONNECTED_BIT);
