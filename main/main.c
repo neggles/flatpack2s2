@@ -301,18 +301,7 @@ void app_main(void) {
     xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* delay to let the console connect
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
-    //* Create OLED display task
-    xLvglMutex = xSemaphoreCreateMutex();
-    assert(xLvglMutex != NULL);
-    // spawn task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 5, NULL);
-    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    //* Create TWAI setup task
-    xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
-    xEventGroupWaitBits(appEventGroup, TWAI_ALL_RUN_BITS, pdFALSE, pdTRUE, portMAX_DELAY);
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
     //* Create RGB LED update task
     xLedQueue = xQueueCreate(3, sizeof(hsv_t));
@@ -325,6 +314,19 @@ void app_main(void) {
     xQueueSend(xLedQueue, &led_initial, 0);
     xTaskCreate(&ledTask, "ledTask", 1024 * 2, NULL, 3, NULL);
     xEventGroupWaitBits(appEventGroup, LED_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    //* Create OLED display task
+    xLvglMutex = xSemaphoreCreateMutex();
+    assert(xLvglMutex != NULL);
+    // spawn task
+    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 5, NULL);
+    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    //* Create TWAI setup task
+    xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
+    xEventGroupWaitBits(appEventGroup, TWAI_ALL_RUN_BITS, pdFALSE, pdTRUE, portMAX_DELAY);
+
+
 
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
@@ -344,7 +346,11 @@ static void displayTask(void *ignore) {
 
     // initialize LVGL itself + the ESP32 driver components
     lv_init();
-    lvgl_driver_init();
+    esp_err_t drv_err = lvgl_driver_init();
+    if (drv_err != ESP_OK) {
+        ESP_LOGE(DISP_TASK_TAG, "Display driver initialization failed! Terminating display task...");
+        vTaskDelete(NULL);
+    }
     lvgl_gpiodev_init();
 
     /**
@@ -359,14 +365,13 @@ static void displayTask(void *ignore) {
      *        so size_in_px = DISP_BUF_SIZE * 8
      */
     // create display buffer
-    lv_color_t *buf1 = heap_caps_malloc(DISP_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    assert(buf1 != NULL);
-    static lv_color_t *buf2 = NULL;
+    lv_color_t *bufmem = heap_caps_malloc(DISP_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    assert(bufmem != NULL);
     static lv_disp_buf_t disp_buf;
     uint32_t size_in_px = DISP_BUF_SIZE * 8;
 
     // initialize display driver
-    lv_disp_buf_init(&disp_buf, buf1, buf2, size_in_px);
+    lv_disp_buf_init(&disp_buf, bufmem, NULL, size_in_px);
     lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
     disp_drv.flush_cb   = disp_driver_flush;
@@ -406,7 +411,7 @@ static void displayTask(void *ignore) {
     }
 
     /* A task should NEVER return */
-    free(buf1);
+    free(bufmem);
     vTaskDelete(NULL);
 }
 
