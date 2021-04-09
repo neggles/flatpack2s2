@@ -93,7 +93,7 @@
 #define TWAI_TX_TIMEOUT_SEC 1
 #define TWAI_RX_TIMEOUT_SEC 10
 #define TWAI_TX_RETRIES     3
-#define TWAI_MSG_LOG_ALL    1
+#define TWAI_MSG_LOG_ALL    0
 
 // interval for internal temp sensor measurements
 #define ESP_TEMP_POLL_SEC 10
@@ -154,11 +154,11 @@ static const int ALL_RUN_BITS = (DISP_RUN_BIT | TWAI_ALL_RUN_BITS | CONSOLE_RUN_
 
 
 // Task Queues
-static QueueHandle_t xTwaiTxQueue;
-static QueueHandle_t xLedQueue;
+QueueHandle_t xTwaiTxQueue;
+QueueHandle_t xLedQueue;
 
 // LVGL-related
-static SemaphoreHandle_t xLvglMutex;
+SemaphoreHandle_t xLvglMutex;
 #pragma endregion handles
 
 
@@ -277,6 +277,7 @@ void app_main(void) {
     //* logging config
     esp_log_level_set("*", ESP_LOG_INFO);
     if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
+    esp_log_level_set("wifi:*", ESP_LOG_WARN);
 
     //* initialise the main app event group and default event loop
     appEventGroup = xEventGroupCreate();
@@ -306,8 +307,8 @@ void app_main(void) {
     //* Create RGB LED update task
     xLedQueue = xQueueCreate(3, sizeof(hsv_t));
     assert(xLedQueue != NULL);
-    hsv_t led_initial = {
-        .hue = 0,
+    const hsv_t led_initial = {
+        .hue = 260,
         .sat = 100,
         .val = 50,
     };
@@ -320,13 +321,12 @@ void app_main(void) {
     assert(xLvglMutex != NULL);
     // spawn task
     xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 5, NULL);
-    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    // display task may fail, so only waiting 2 seconds here
+    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(2000));
 
     //* Create TWAI setup task
     xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
     xEventGroupWaitBits(appEventGroup, TWAI_ALL_RUN_BITS, pdFALSE, pdTRUE, portMAX_DELAY);
-
-
 
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
@@ -768,23 +768,22 @@ void ledTask(void *ignore) {
 
     hsv_t hsv;
 
-    // do init
+    // initialise RMT driver and turn off LED
     led_init();
-
-    // turn off LED
     led_clear();
 
-    // initialise task handler delay loop
+    // set up delay loop
     TickType_t xLastWakeTime       = xTaskGetTickCount();
     const TickType_t xTaskInterval = pdMS_TO_TICKS(1000 / LED_UPDATE_RATE_HZ);
 
+    // signal app_main to continue
     ESP_LOGI(LED_TASK_TAG, "initialization complete");
     xEventGroupSetBits(appEventGroup, LED_RUN_BIT);
 
     // get me requested LED state and display it
     // TODO: replace this with something using an effects library probably
     while (true) {
-        xQueueReceive(xLedQueue, &hsv, portMAX_DELAY);
+        xQueueReceive(xLedQueue, &hsv, pdMS_TO_TICKS(1000 / LED_UPDATE_RATE_HZ));
         led_set_hsv(hsv.hue, hsv.sat, hsv.val);
         vTaskDelayUntil(&xLastWakeTime, xTaskInterval);
     }

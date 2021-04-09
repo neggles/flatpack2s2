@@ -115,8 +115,8 @@ typedef struct {
         struct {
             uint32_t iout : 16;  //< current limit, deciAmps
             uint32_t vmeas : 16; //< measured PSU output, centiVolts
-            uint32_t vset : 16;  //< setpoint voltage
-            uint32_t vovp : 16;  //< overvoltage protection point
+            uint32_t vset : 16;  //< setpoint voltage, centiVolts
+            uint32_t vovp : 16;  //< overvoltage protection point, centiVolts
         };
     };
     uint32_t     broadcast;

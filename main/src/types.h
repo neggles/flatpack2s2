@@ -10,8 +10,8 @@
  *      - val = 0-100
  */
 typedef struct {
-    uint8_t hue;
-    uint8_t sat;
-    uint8_t val;
+    uint32_t hue;
+    uint32_t sat;
+    uint32_t val;
 } hsv_t;
 

@@ -1,6 +1,12 @@
+// freeRTOS
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+
+// project includes
 #include "flatpack2.h"
-// project macros
 #include "macros.h"
+#include "types.h"
+
 
 // * --------------------------- Global Variables --------------------------- */
 // Log tags
@@ -17,13 +23,20 @@ const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure",    
                                  "Fan 3 Speed Low",        "Internal Voltage Fault"};
 
 
-static const fp2_status_code_t fp2_status_table[] = {
+const fp2_status_code_t fp2_status_table[] = {
     {FP2_STATUS_OK, "OK/CV"},
     {FP2_STATUS_WARN, "WARN/CC"},
     {FP2_STATUS_ALERT, "ALERT"},
     {FP2_STATUS_WALKIN, "WALK-IN"}
 };
 
+static const hsv_t led_fp2_found = {
+    .hue = 120,
+    .sat = 100,
+    .val = 50
+};
+
+extern QueueHandle_t xLedQueue;
 
 // * ------------------------------ Functions ------------------------------- */
 
@@ -100,6 +113,9 @@ void fp2_save_details(twai_message_t *rxMsg, flatpack2_t *psu, int isLoginReq) {
         // update msg_login identifier and payload
         psu->msg_login.identifier = (psu->id << 2) | FP2_CMD_LOGIN;
         memcpy(&psu->msg_login.data[0], &rxMsg->data[isLoginReq], sizeof(psu->serial));
+
+        // send a color change to the led task
+        xQueueSend(xLedQueue, &led_fp2_found, pdMS_TO_TICKS(100));
 
         // print device found message, warning log level so it stands out
         ESP_LOGW(FP2_LOGIN_TAG, "[RX][%s] PSU ID %#04x found: S/N %02x%02x%02x%02x%02x%02x, msg_login id %#010x",
