@@ -43,10 +43,9 @@
 #include "soc/rtc.h"
 
 // wifi prov mgmt
-#include "esp_wifi.h"
+#include "esp_wifi_types.h"
 #include "esp_netif.h"
 #include "wifi_manager.h"
-#include "nvs_sync.h"
 
 // * --------------------------- Project components ------------------------- */
 

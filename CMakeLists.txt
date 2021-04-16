@@ -8,7 +8,7 @@ set(PROJECT_VER "0.1.0")
 #set(EXCLUDE_COMPONENTS "coap" "asio")
 
 # Save some space and build time
-list(APPEND EXCLUDE_COMPONENTS "freemodbus" "sdmmc" "ulp" "esp_serial_slave_link" "esp_eth" "esp_hid")
+list(APPEND EXCLUDE_COMPONENTS "freemodbus")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(flatpack2s2)
