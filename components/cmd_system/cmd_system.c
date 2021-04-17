@@ -29,7 +29,7 @@
 #endif
 
 #ifdef CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
-#define WITH_RUNTIME_INFO 1
+#    define WITH_RUNTIME_INFO 1
 #endif
 
 static const char *TAG = "cmd_system";
@@ -187,9 +187,9 @@ static int tasks_htop(int argc, char **argv) {
         return 1;
     }
     fputs("Task Name\tTask Ticks\tCPU %", stdout);
-#ifdef CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID
+#    ifdef CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID
     fputs("\tAffinity", stdout);
-#endif
+#    endif
     fputs("\n", stdout);
     vTaskGetRunTimeStats(task_list_buffer);
     fputs(task_list_buffer, stdout);

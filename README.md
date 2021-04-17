@@ -2,7 +2,7 @@
 
 [![esp-idf-build](https://github.com/neg2led/flatpack2s2/actions/workflows/esp-idf-build.yml/badge.svg?branch=master)](https://github.com/neg2led/flatpack2s2/actions/workflows/esp-idf-build.yml)
 
-application code for my [esp32-cantroller](https://github.com/neg2led/esp32-cantroller) board, to control an Eltek Flatpack2 rectifier/power supply module.
+application code for my [esp32-cantroller](https://github.com/neg2led/esp32-cantroller) board, to control an Eltek Flatpack2 rectifier/power supply module (and maybe some others later!)
 
 more documentation to come later on, once the code is something vaguely resembling stable/feature-complete.
 
