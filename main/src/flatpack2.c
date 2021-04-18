@@ -24,8 +24,9 @@ const char *fp2_alerts1_str[] = {"Internal Voltage Fault", "Module Failure",    
 
 
 const fp2_status_code_t fp2_status_table[] = {
-    {FP2_STATUS_OK, "OK/CV"},
-    {FP2_STATUS_WARN, "WARN/CC"},
+    {0x0, "NOT PRESENT"},
+    {FP2_STATUS_OK, "OK (CV)"},
+    {FP2_STATUS_WARN, "WARN (CC)"},
     {FP2_STATUS_ALERT, "ALERT"},
     {FP2_STATUS_WALKIN, "WALK-IN"}
 };

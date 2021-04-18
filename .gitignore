@@ -16,3 +16,6 @@ sdkconfig.old
 
 # putting stuff i'm using as references and notes etc in here
 misc/
+
+# monitor logs
+log.flatpack2s2.*.txt

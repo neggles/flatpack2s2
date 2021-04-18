@@ -68,7 +68,7 @@ static uint32_t gpio_to_keycode(uint32_t io_num) {
         case BTN_SELECT: return LV_KEY_ENTER;
         case BTN_LEFT: return LV_KEY_LEFT;
         case BTN_RIGHT: return LV_KEY_RIGHT;
-        case BTN_BACK: return LV_KEY_ESC;
+        case BTN_BACK: return LV_KEY_PREV;
         default: return 0;
     }
 }

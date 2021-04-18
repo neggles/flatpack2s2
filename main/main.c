@@ -41,10 +41,11 @@
 #include "driver/temp_sensor.h"
 #include "driver/twai.h"
 #include "soc/rtc.h"
+#include "soc/rtc_wdt.h"
 
 // wifi prov mgmt
-#include "esp_wifi_types.h"
 #include "esp_netif.h"
+#include "esp_wifi_types.h"
 #include "wifi_manager.h"
 
 // * --------------------------- Project components ------------------------- */
@@ -64,7 +65,7 @@
 #include "lvgl.h"
 #include "lvgl_helpers.h"
 // gpiodev and theme
-#include "lv_theme_fp2.h"
+// #include "lv_theme_fp2.h"
 #include "lvgl_gpiodev.h"
 
 // Extra project source files (helper functions etc.)
@@ -82,7 +83,7 @@
 
 // RGB LED driver config
 #define RMT_LED_CHANNEL    RMT_CHANNEL_0
-#define LED_UPDATE_RATE_HZ 50
+#define LED_UPDATE_RATE_HZ 40
 
 // TWAI transcever (MAX3051ESA+ in my case) configuration
 #define TWAI_EN_GPIO        CONFIG_TWAI_EN_GPIO
@@ -97,12 +98,8 @@
 #define ESP_TEMP_POLL_SEC 10
 
 // lvgl task handler interval and tick update interval
-#define LV_TASK_PERIOD_MS 20
+#define LV_TASK_PERIOD_MS CONFIG_LV_DISP_DEF_REFR_PERIOD
 
-// WiFi prov manager defines
-#define PROV_QR_VERSION       "v1"
-#define PROV_TRANSPORT_SOFTAP "softap"
-#define QRCODE_BASE_URL       "https://espressif.github.io/esp-jumpstart/qrcode.html"
 
 // Log tag strings
 static const char *TAG                = "flatpack2s2";
@@ -147,8 +144,7 @@ static const int FP2_FOUND_BIT      = BIT13;
 static const int FP2_SET_REQ_BIT    = BIT14;
 
 // lvgl checks these before moving off the loading screen
-static const int ALL_RUN_BITS = (DISP_RUN_BIT | TWAI_ALL_RUN_BITS | CONSOLE_RUN_BIT | LED_RUN_BIT | TEMP_RUN_BIT );
-
+static const int ALL_RUN_BITS = (DISP_RUN_BIT | TWAI_ALL_RUN_BITS | CONSOLE_RUN_BIT | LED_RUN_BIT | TEMP_RUN_BIT);
 
 // Task Queues
 QueueHandle_t xTwaiTxQueue;
@@ -173,6 +169,7 @@ static fp2_setting_t fp2_settings = {0};
 // lvgl objects
 static lv_indev_t *gpio_indev;
 static lv_group_t *lv_group;
+static lv_theme_t *fp2_theme;
 
 static lv_obj_t *scr_def;
 static lv_obj_t *scr_status;
@@ -182,38 +179,51 @@ static lv_obj_t *lv_tile_output;
 static lv_obj_t *lv_tile_status;
 static lv_obj_t *lv_tile_vars;
 
-struct {
-    lv_obj_t *vdc;
-    lv_obj_t *amps;
-    lv_obj_t *watts;
-    lv_obj_t *temp;
+static union {
+    struct {
+        lv_obj_t *vdc;
+        lv_obj_t *amps;
+        lv_obj_t *watts;
+    };
+    lv_obj_t *all[3];
 } lv_t1_labels;
 
-struct {
-    lv_obj_t *vac;
-    lv_obj_t *intake;
-    lv_obj_t *exhaust;
-    lv_obj_t *status;
+static union {
+    struct {
+        lv_obj_t *vac;
+        lv_obj_t *intake;
+        lv_obj_t *exhaust;
+        lv_obj_t *status;
+    };
+    lv_obj_t *all[4];
 } lv_t2_labels;
 
-struct {
-    lv_obj_t *vac;
-    lv_obj_t *vdc;
-    lv_obj_t *amps;
-    lv_obj_t *watts;
-    lv_obj_t *temp;
-    lv_obj_t *status;
-    lv_obj_t *serial;
+static union {
+    struct {
+        lv_obj_t *vac;
+        lv_obj_t *vdc;
+        lv_obj_t *amps;
+        lv_obj_t *watts;
+        lv_obj_t *intake;
+        lv_obj_t *exhaust;
+        lv_obj_t *status;
+        lv_obj_t *serial;
+    };
+    lv_obj_t *all[8];
 } lv_t3_labels;
 
-struct {
-    lv_obj_t *vac;
-    lv_obj_t *vdc;
-    lv_obj_t *amps;
-    lv_obj_t *watts;
-    lv_obj_t *temp;
-    lv_obj_t *status;
-    lv_obj_t *serial;
+static union {
+    struct {
+        lv_obj_t *vac;
+        lv_obj_t *vdc;
+        lv_obj_t *amps;
+        lv_obj_t *watts;
+        lv_obj_t *intake;
+        lv_obj_t *exhaust;
+        lv_obj_t *status;
+        lv_obj_t *serial;
+    };
+    lv_obj_t *all[8];
 } lv_t3_btns;
 
 static lv_obj_t *app_name;
@@ -237,13 +247,14 @@ static void timeSyncTask(void *ignore);
 
 // Functions
 static void initialiseConsole(void);
+static void set_fp2_output(void);
 static void lvAppCreate(void);
 static void lv_val_update(lv_task_t *task);
 static void lv_check_startup(lv_task_t *task);
 
 // Callbacks
+static void lv_group_focus_cb(lv_group_t *group);
 static void lv_log_cb(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc);
-
 // esp32-wifi-manager
 static void cb_netConnected(void *arg);
 static void cb_netDisconnected(void *arg);
@@ -270,13 +281,19 @@ void app_main(void) {
     ESP_LOGW(TAG, "flatpack2s2 startup!");
 
     //* logging config
-    esp_log_level_set("*", ESP_LOG_INFO);
+    //esp_log_level_set("*", ESP_LOG_INFO);
     if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
-    esp_log_level_set("wifi:*", ESP_LOG_WARN);
+    // esp_log_level_set("wifi:*", ESP_LOG_INFO);
+    // esp_log_level_set("httpd_parse", ESP_LOG_INFO);
+    // esp_log_level_set("httpd_txrx", ESP_LOG_INFO);
+    // esp_log_level_set("httpd_sess", ESP_LOG_INFO);
 
     //* initialise the main app event group and default event loop
     appEventGroup = xEventGroupCreate();
     assert(appEventGroup != NULL);
+
+    //* wait 2 seconds to allow esptool to flash
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     //* Initialize NVS partition
     esp_err_t ret = nvs_flash_init();
@@ -291,13 +308,6 @@ void app_main(void) {
     //!  temporarary fixed setpoints for PSU
     set_fp2_output();
 
-    //* start the command-line console task and wait for init
-    xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 10, NULL);
-    xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    //* delay to let the console connect
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
     //* Create RGB LED update task
     xLedQueue = xQueueCreate(3, sizeof(hsv_t));
     assert(xLedQueue != NULL);
@@ -310,14 +320,6 @@ void app_main(void) {
     xTaskCreate(&ledTask, "ledTask", 1024 * 2, NULL, 3, NULL);
     xEventGroupWaitBits(appEventGroup, LED_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    //* Create OLED display task
-    xLvglMutex = xSemaphoreCreateMutex();
-    assert(xLvglMutex != NULL);
-    // spawn task
-    xTaskCreate(&displayTask, "display", 1024 * 8, NULL, 5, NULL);
-    // display task may fail, so only waiting 2 seconds here
-    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(2000));
-
     //* Create TWAI setup task
     xTaskCreate(&twaiCtrlTask, "twaiCtrlTask", 1024 * 6, NULL, 5, NULL);
     xEventGroupWaitBits(appEventGroup, TWAI_ALL_RUN_BITS, pdFALSE, pdTRUE, portMAX_DELAY);
@@ -325,6 +327,10 @@ void app_main(void) {
     //* Create temp sensor polling task
     xTaskCreate(&tempSensorTask, "tempSensor", 1024 * 2, NULL, tskIDLE_PRIORITY, NULL);
     xEventGroupWaitBits(appEventGroup, TEMP_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    //* start the command-line console task and wait for init
+    xTaskCreate(&consoleTask, "consoleTask", 1024 * 6, NULL, 8, NULL);
+    xEventGroupWaitBits(appEventGroup, CONSOLE_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     //* init wifi manager, register callbacks
     wifi_manager_start();
@@ -335,8 +341,19 @@ void app_main(void) {
     //* wait a second or two for that to do its thing
     vTaskDelay(pdMS_TO_TICKS(1000));
 
+    //* Create OLED display task
+    xLvglMutex = xSemaphoreCreateMutex();
+    assert(xLvglMutex != NULL);
+    // spawn task
+    xTaskCreate(&displayTask, "display", 1024 * 12, NULL, 6, NULL);
+    // display task may fail, so only waiting 2 seconds here
+    xEventGroupWaitBits(appEventGroup, DISP_RUN_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(2000));
+
     //* Create SNTP management task
     xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
+
+    //* kill the startup watchdog
+    rtc_wdt_disable();
 
     ESP_LOGW(TAG, "flatpack2s2 startup complete!");
 }
@@ -354,6 +371,7 @@ static void displayTask(void *ignore) {
         ESP_LOGE(DISP_TASK_TAG, "Display driver initialization failed! Terminating display task...");
         vTaskDelete(NULL);
     }
+    lv_log_register_print_cb(&lv_log_cb);
     lvgl_gpiodev_init();
 
     /**
@@ -382,7 +400,6 @@ static void displayTask(void *ignore) {
     disp_drv.set_px_cb  = disp_driver_set_px;
     disp_drv.buffer     = &disp_buf;
     lv_disp_drv_register(&disp_drv);
-    lv_log_register_print_cb(&lv_log_cb);
 
     // initialize GPIO indev_drv
     lv_indev_drv_t lv_gpiodev;
@@ -390,6 +407,9 @@ static void displayTask(void *ignore) {
     lv_gpiodev.type    = LV_INDEV_TYPE_ENCODER;
     lv_gpiodev.read_cb = lvgl_gpiodev_read;
     gpio_indev         = lv_indev_drv_register(&lv_gpiodev);
+    // assign it to the group
+    lv_group = lv_group_create();
+    lv_indev_set_group(gpio_indev, lv_group);
 
     // set up LVGL app
     lvAppCreate();
@@ -397,14 +417,13 @@ static void displayTask(void *ignore) {
     // set display ready bit
     xEventGroupSetBits(appEventGroup, DISP_RUN_BIT);
 
-    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 350, 1000, true);
-    lv_tileview_set_tile_act(lv_tileview, 2, 0, LV_ANIM_ON);
+    lv_scr_load_anim(scr_status, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 500, 2000, true);
 
     uint32_t lv_delay;
     while (true) {
         lv_delay = LV_TASK_PERIOD_MS;
         // try to take the semaphore
-        if (pdTRUE == xSemaphoreTake(xLvglMutex, lv_delay / portTICK_RATE_MS)) {
+        if (pdTRUE == xSemaphoreTake(xLvglMutex, pdMS_TO_TICKS(lv_delay))) {
             // run LVGL task handler - returns required delay before running again
             lv_delay = lv_task_handler();
             xSemaphoreGive(xLvglMutex);
@@ -422,26 +441,37 @@ static void displayTask(void *ignore) {
 static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
-    // lv_theme_t * fp2_theme = lv_theme_fp2_init();
+/*
+    lv_theme_t *base_theme = lv_theme_get_act();
+    fp2_theme = lv_theme_fp2_init(LV_THEME_DEFAULT_COLOR_PRIMARY, LV_THEME_DEFAULT_COLOR_SECONDARY,
+                                  LV_THEME_DEFAULT_FLAG, LV_THEME_DEFAULT_FONT_SMALL, LV_THEME_DEFAULT_FONT_NORMAL,
+                                  LV_THEME_DEFAULT_FONT_SUBTITLE, LV_THEME_DEFAULT_FONT_TITLE);
+    lv_theme_set_base(fp2_theme, base_theme);
+    lv_theme_set_act(fp2_theme);
+*/
 
     // get app data
     const esp_app_desc_t *app_info = esp_ota_get_app_description();
 
     // Get current/default screen
     scr_def = lv_disp_get_scr_act(NULL);
+
     // Create project name label
     app_name = lv_label_create(scr_def, NULL);
     lv_label_set_text(app_name, app_info->project_name);
     lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
+
     // create spinny loading icon
     load_spinner = lv_spinner_create(scr_def, NULL);
     lv_obj_set_size(load_spinner, 90, 90);
     lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -5);
     lv_spinner_set_type(load_spinner, LV_SPINNER_TYPE_CONSTANT_ARC);
+
     // Get rid of annoying border around spinny loading icon
     lv_obj_set_style_local_line_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
     lv_obj_set_style_local_bg_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
     lv_obj_set_style_local_border_opa(load_spinner, LV_SPINNER_PART_BG, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+
 
     // create status screen
     scr_status  = lv_obj_create(NULL, NULL);
@@ -453,16 +483,35 @@ static void lvAppCreate(void) {
     lv_tileview_set_edge_flash(lv_tileview, true);
     lv_page_set_scrollbar_mode(lv_tileview, LV_SCROLLBAR_MODE_OFF);
 
-    // tile 1: output voltage, current, watts
+    // tile_output: output voltage, current, watts
     lv_tile_output = lv_obj_create(lv_tileview, NULL);
     lv_obj_set_size(lv_tile_output, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(lv_tile_status, 0, 0);
     lv_tileview_add_element(lv_tileview, lv_tile_output);
+
+    lv_t1_labels.vdc = lv_label_create(lv_tile_output, NULL);
+    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+    lv_t1_labels.amps = lv_label_create(lv_tile_output, NULL);
+    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_LEFT_MID, 0, 0);
+    lv_t1_labels.watts = lv_label_create(lv_tile_output, NULL);
+    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_BOTTOM_LEFT, 0, 0);
+
 
     // tile_status: input voltage, temps, status code
     lv_tile_status = lv_obj_create(lv_tileview, NULL);
     lv_obj_set_size(lv_tile_status, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_pos(lv_tile_status, LV_HOR_RES, 0);
     lv_tileview_add_element(lv_tileview, lv_tile_status);
+
+    lv_t2_labels.vac = lv_label_create(lv_tile_status, NULL);
+    lv_obj_align(lv_t2_labels.vac, lv_tile_status, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+    lv_t2_labels.intake = lv_label_create(lv_tile_status, NULL);
+    lv_obj_align(lv_t2_labels.intake, lv_tile_status, LV_ALIGN_IN_TOP_RIGHT, 0, 0);
+    lv_t2_labels.exhaust = lv_label_create(lv_tile_status, NULL);
+    lv_obj_align(lv_t2_labels.exhaust, lv_tile_status, LV_ALIGN_IN_RIGHT_MID, 0, 0);
+    lv_t2_labels.status = lv_label_create(lv_tile_status, NULL);
+    lv_obj_align(lv_t2_labels.status, lv_tile_status, LV_ALIGN_IN_BOTTOM_LEFT, 0, 0);
+
 
     // tile_vars: all available status values, in a list
     lv_tile_vars = lv_list_create(lv_tileview, NULL);
@@ -472,46 +521,127 @@ static void lvAppCreate(void) {
     lv_list_set_scrollbar_mode(lv_tile_vars, LV_SCROLLBAR_MODE_OFF);
 
     // add buttons to the list
-    lv_t3_btns.vac    = lv_list_add_btn(lv_tile_vars, NULL, " Vac: ?");
-    lv_t3_btns.vdc    = lv_list_add_btn(lv_tile_vars, NULL, "Vdc: ?");
-    lv_t3_btns.amps   = lv_list_add_btn(lv_tile_vars, NULL, "Amps: ?");
-    lv_t3_btns.temp   = lv_list_add_btn(lv_tile_vars, NULL, "Temp: ?");
-    lv_t3_btns.watts  = lv_list_add_btn(lv_tile_vars, NULL, " Pwr: ?");
-    lv_t3_btns.status = lv_list_add_btn(lv_tile_vars, NULL, "Stat: ?");
-    lv_t3_btns.serial = lv_list_add_btn(lv_tile_vars, NULL, "  SN: ?");
+    lv_t3_btns.vac     = lv_list_add_btn(lv_tile_vars, NULL, "Vin: ?");
+    lv_t3_btns.vdc     = lv_list_add_btn(lv_tile_vars, NULL, "Vout: ?");
+    lv_t3_btns.amps    = lv_list_add_btn(lv_tile_vars, NULL, "Iout: ?");
+    lv_t3_btns.watts   = lv_list_add_btn(lv_tile_vars, NULL, "Power: ?");
+    lv_t3_btns.intake  = lv_list_add_btn(lv_tile_vars, NULL, "Intake: ?");
+    lv_t3_btns.exhaust = lv_list_add_btn(lv_tile_vars, NULL, "Exhaust: ?");
+    lv_t3_btns.status  = lv_list_add_btn(lv_tile_vars, NULL, "Status: ?");
+    lv_t3_btns.serial  = lv_list_add_btn(lv_tile_vars, NULL, "SN: ?");
 
     // get label objects for the buttons so we can update their values later
-    lv_t3_labels.vac    = lv_list_get_btn_label(lv_t3_btns.vac);
-    lv_t3_labels.vdc    = lv_list_get_btn_label(lv_t3_btns.vdc);
-    lv_t3_labels.amps   = lv_list_get_btn_label(lv_t3_btns.amps);
-    lv_t3_labels.temp   = lv_list_get_btn_label(lv_t3_btns.temp);
-    lv_t3_labels.watts  = lv_list_get_btn_label(lv_t3_btns.watts);
-    lv_t3_labels.status = lv_list_get_btn_label(lv_t3_btns.status);
-    lv_t3_labels.serial = lv_list_get_btn_label(lv_t3_btns.serial);
+    lv_t3_labels.vac     = lv_list_get_btn_label(lv_t3_btns.vac);
+    lv_t3_labels.vdc     = lv_list_get_btn_label(lv_t3_btns.vdc);
+    lv_t3_labels.amps    = lv_list_get_btn_label(lv_t3_btns.amps);
+    lv_t3_labels.watts   = lv_list_get_btn_label(lv_t3_btns.watts);
+    lv_t3_labels.intake  = lv_list_get_btn_label(lv_t3_btns.intake);
+    lv_t3_labels.exhaust = lv_list_get_btn_label(lv_t3_btns.exhaust);
+    lv_t3_labels.status  = lv_list_get_btn_label(lv_t3_btns.status);
+    lv_t3_labels.serial  = lv_list_get_btn_label(lv_t3_btns.serial);
+
+    // set the fit on all the buttons
+    uint32_t num = sizeof(lv_t3_btns.all) / sizeof(lv_t3_btns.all[0]);
+    for (uint32_t i = 0; i < num; i++) {
+        lv_btn_set_fit2(lv_t3_btns.all[i], LV_FIT_PARENT, LV_FIT_TIGHT);
+    }
+
+    // add tiles to lv group
+    lv_group_add_obj(lv_group, lv_tile_output);
+    lv_group_add_obj(lv_group, lv_tile_status);
+    lv_group_add_obj(lv_group, lv_tile_vars);
+    lv_group_set_focus_cb(lv_group, &lv_group_focus_cb);
+    // lv_group_add_obj(lv_group, lv_tileview);
 
     // set up fp2 value update lvgl task
     lv_task_t *lv_val_update_task = lv_task_create(lv_val_update, 500, LV_TASK_PRIO_MID, NULL);
 
+    // temporarily set active tile to pg 3
+    // lv_tileview_set_tile_act(lv_tileview, 2, 0, LV_ANIM_ON);
 }
 
 // lvgl task callbacks
-void lv_val_update(lv_task_t *task) {
+static void lv_val_update(lv_task_t *task) {
+    lv_coord_t tile_x;
+    lv_coord_t tile_y;
+    lv_tileview_get_tile_act(lv_tileview, &tile_x, &tile_y);
     const char *cur_fp2_status = fp2_status_to_str(fp2.status);
-    lv_label_set_text_fmt(lv_t3_labels.vac,    " Vac: %4dV", fp2.sensors.vac);
-    lv_label_set_text_fmt(lv_t3_labels.vdc,    " Vdc: %4.1fV", fp2.sensors.vdc);
-    lv_label_set_text_fmt(lv_t3_labels.amps,   "Amps: %4.1fA", fp2.sensors.amps);
-    lv_label_set_text_fmt(lv_t3_labels.temp,   "Temp: I %2d°C O %2d°C", fp2.sensors.intake, fp2.sensors.exhaust);
-    lv_label_set_text_fmt(lv_t3_labels.watts,  " Pwr: %4.1fW", fp2.sensors.watts);
-    lv_label_set_text_fmt(lv_t3_labels.status, "Stat: %s", cur_fp2_status);
-    lv_label_set_text_fmt(lv_t3_labels.serial, "  SN: %02x%02x%02x%02x%02x%02x", fp2.serial[0], fp2.serial[1],
-                          fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5]);
+
+    switch (tile_x) {
+        case 0: // lv_tile_output
+            lv_label_set_text_fmt(lv_t1_labels.vdc, "%4.1fVDC", fp2.sensors.vdc);
+            lv_label_set_text_fmt(lv_t1_labels.amps, "%4.1fA", fp2.sensors.amps);
+            lv_label_set_text_fmt(lv_t1_labels.watts, "%4.1fW", fp2.sensors.watts);
+            break;
+        case 1: // lv_tile_status
+            lv_label_set_text_fmt(lv_t2_labels.vac, "%4.1fVAC", fp2.sensors.vac);
+            lv_label_set_text_fmt(lv_t2_labels.intake, "%2d°C", fp2.sensors.intake);
+            lv_label_set_text_fmt(lv_t2_labels.exhaust, "%2d°C", fp2.sensors.exhaust);
+            lv_label_set_text_fmt(lv_t2_labels.status, "%s", cur_fp2_status);
+            break;
+        case 2: // lv_tile_vars
+            lv_label_set_text_fmt(lv_t3_labels.vac, "Vin: %3dV AC", fp2.sensors.vac);
+            lv_label_set_text_fmt(lv_t3_labels.vdc, "Vout: %4.1fV DC", fp2.sensors.vdc);
+            lv_label_set_text_fmt(lv_t3_labels.amps, "Iout: %4.1f A", fp2.sensors.amps);
+            lv_label_set_text_fmt(lv_t3_labels.watts, "Power: %4.1f W", fp2.sensors.watts);
+            lv_label_set_text_fmt(lv_t3_labels.intake, "Intake: %2d°C", fp2.sensors.intake);
+            lv_label_set_text_fmt(lv_t3_labels.exhaust, "Exhaust: %2d°C", fp2.sensors.exhaust);
+            lv_label_set_text_fmt(lv_t3_labels.status, "Status: %s", cur_fp2_status);
+            lv_label_set_text_fmt(lv_t3_labels.serial, "SN: %02x%02x%02x%02x%02x%02x", fp2.serial[0], fp2.serial[1],
+                                  fp2.serial[2], fp2.serial[3], fp2.serial[4], fp2.serial[5]);
+            break;
+        default: break;
+    }
 }
 
 // lvgl event Callbacks
-//void lv_focus_cb(lv_group_t *group) {}
+static void lv_group_focus_cb(lv_group_t *group) {
+    static const char *LOCAL_TAG = "lv_group_focus";
+    lv_obj_t *obj                = lv_group_get_focused(group);
+    lv_coord_t tile_x;
+    lv_coord_t tile_y = 0;
+    if (obj == lv_tile_output) {
+        tile_x = 0;
+        lv_tileview_set_tile_act(lv_tileview, tile_x, tile_y, LV_ANIM_ON);
+    } else if (obj == lv_tile_status) {
+        tile_x = 1;
+        lv_tileview_set_tile_act(lv_tileview, tile_x, tile_y, LV_ANIM_ON);
+    } else if (obj == lv_tile_vars) {
+        tile_x = 2;
+        lv_tileview_set_tile_act(lv_tileview, tile_x, tile_y, LV_ANIM_ON);
+    } else {
+        ESP_LOGI(LOCAL_TAG, "no tile found to focus");
+    }
+}
+
+/* static void lv_tv_event_cb(lv_obj_t *tv, lv_event_t e) {
+    if (e == LV_EVENT_VALUE_CHANGED || e == LV_EVENT_REFRESH) {
+        lv_group_remove_all_objs(lv_group);
+
+        uint16_t tab    = lv_tabview_get_tab_act(tv);
+        size_t size     = 0;
+        lv_obj_t **objs = NULL;
+        if (tab == 0) {
+            size = sizeof(selector_objs);
+            objs = (lv_obj_t **)&selector_objs;
+        } else if (tab == 1) {
+            size = sizeof(textinput_objs);
+            objs = (lv_obj_t **)&textinput_objs;
+        }
+
+        lv_group_add_obj(lv_group, tv);
+
+        uint32_t i;
+        for (i = 0; i < size / sizeof(lv_obj_t *); i++) {
+            if (objs[i] == NULL) continue;
+            lv_group_add_obj(lv_group, objs[i]);
+        }
+    }
+}
+ */
 
 // lvgl log callback
-void lv_log_cb(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
+static void lv_log_cb(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
     // use ESP_LOGx macros
     switch (level) {
         case LV_LOG_LEVEL_INFO: ESP_LOGI(LVGL_TAG, "%s: %s at %s:%d", fn_name, dsc, file, line); break;
@@ -771,9 +901,10 @@ void ledTask(void *ignore) {
 
     hsv_t hsv;
 
-    // initialise RMT driver and turn off LED
+    // initialise RMT driver, clear LED, set to dim red
     led_init();
     led_clear();
+    led_set_hsv(360, 100, 20);
 
     // set up delay loop
     TickType_t xLastWakeTime       = xTaskGetTickCount();
@@ -951,10 +1082,11 @@ void timeSyncTask(void *ignore) {
 void cb_timeSyncEvent(struct timeval *tv) {
     ESP_LOGI(TIMESYNC_TASK_TAG, "SNTP sync event notification");
 
-    if ((xEventGroupGetBits(appEventGroup) & TIMESYNC_RUN_BIT) == 0) xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
+    if ((xEventGroupGetBits(appEventGroup) & TIMESYNC_RUN_BIT) == 0)
+        xEventGroupSetBits(appEventGroup, TIMESYNC_RUN_BIT);
 
-    char      strftime_sntp[64];
-    time_t    sntp     = (time_t)tv->tv_sec;
+    char strftime_sntp[64];
+    time_t sntp        = (time_t)tv->tv_sec;
     struct tm sntpinfo = {0};
     localtime_r(&sntp, &sntpinfo);
     strftime(strftime_sntp, sizeof(strftime_sntp), "%c", &sntpinfo);

@@ -46,8 +46,8 @@ menu "flatpack2s2 Project Configuration"
             bool "Enable flatpack2 TWAI message filter"
             default n
             help
-                When enabled, the TWAI driver will filter out CAN messages whose IDs do not match 0x05xxxxxx
-                Disable if you're not receiving any messages, or for debugging.
+                When enabled, the TWAI driver will filter out TWAI/CAN messages whose IDs do not match 0x05xxxxxx.
+                Enable if the PSU/controller are sharing the bus with other devices.
 
         config TWAI_EN_ACTIVE_STATE
             int
@@ -78,19 +78,19 @@ menu "flatpack2s2 Project Configuration"
             int "Flatpack2 PSU rated minimum voltage"
             default 4350
             help
-                Enter your power supply's rated minimum voltage, in centiVolts (Volts * 100)
+                Enter your power supply's rated minimum voltage, in centiVolts (Volts * 100).
 
         config FP2_VOUT_MAX
             int "Flatpack2 PSU rated maximum voltage"
             default 5760
             help
-                Enter your power supply's rated maximum voltage, in centiVolts (Volts * 100)
+                Enter your power supply's rated maximum voltage, in centiVolts (Volts * 100).
 
         config FP2_VOUT_OVP
             int "Flatpack2 PSU over-voltage protection setpoint"
             default 5950
             help
-                Level to set for PSU over-voltage protection, in centiVolts (Volts * 100)
+                Level to set for PSU over-voltage protection, in centiVolts (Volts * 100).
                 Typically 1.5-2V higher than rated maximum voltage.
 
         config FP2_IOUT_MAX
