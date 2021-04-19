@@ -486,7 +486,7 @@ static void lvAppCreate(void) {
     // tile_output: output voltage, current, watts
     lv_tile_output = lv_obj_create(lv_tileview, NULL);
     lv_obj_set_size(lv_tile_output, LV_HOR_RES, LV_VER_RES);
-    lv_obj_set_pos(lv_tile_status, 0, 0);
+    lv_obj_set_pos(lv_tile_output, 0, 0);
     lv_tileview_add_element(lv_tileview, lv_tile_output);
 
     lv_t1_labels.vdc = lv_label_create(lv_tile_output, NULL);
