@@ -17,16 +17,6 @@
 /**********************
  *      TYPEDEFS
  **********************/
-typedef struct {
-    lv_style_t bg;
-    lv_style_t btn;
-    lv_style_t round;
-    lv_style_t color;
-    lv_style_t gray;
-    lv_style_t tick_line;
-    lv_style_t tight;
-    lv_style_t spin_bg;
-} theme_styles_t;
 
 /**********************
  *  STATIC PROTOTYPES
@@ -37,7 +27,17 @@ static void theme_apply(lv_theme_t *th, lv_obj_t *obj, lv_theme_style_t name);
  *  STATIC VARIABLES
  **********************/
 static lv_theme_t theme;
-static theme_styles_t styles;
+static struct {
+    lv_style_t bg;
+    lv_style_t btn;
+    lv_style_t round;
+    lv_style_t color;
+    lv_style_t gray;
+    lv_style_t tick_line;
+    lv_style_t tight;
+    lv_style_t spin_bg;
+} styles;
+
 
 /**********************
  *      MACROS
@@ -50,10 +50,9 @@ static theme_styles_t styles;
 static void basic_init(void) {
     lv_style_reset(&styles.bg);
     lv_style_set_bg_opa(&styles.bg, LV_STATE_DEFAULT, LV_OPA_COVER);
-    lv_style_set_border_width(&styles.bg, LV_STATE_DEFAULT, 1);
-    lv_style_set_border_width(&styles.bg, LV_STATE_FOCUSED, 2);
+    lv_style_set_border_width(&styles.bg, LV_STATE_DEFAULT, 0);
+    lv_style_set_border_width(&styles.bg, LV_STATE_FOCUSED, 1);
     lv_style_set_border_color(&styles.bg, LV_STATE_FOCUSED, theme.color_secondary);
-    lv_style_set_border_color(&styles.bg, LV_STATE_EDITED, lv_color_darken(theme.color_secondary, LV_OPA_30));
     lv_style_set_line_width(&styles.bg, LV_STATE_DEFAULT, 1);
     lv_style_set_scale_end_line_width(&styles.bg, LV_STATE_DEFAULT, 1);
     lv_style_set_scale_end_color(&styles.bg, LV_STATE_DEFAULT, theme.color_primary);
@@ -307,8 +306,6 @@ lv_theme_t *lv_theme_fp2_init(lv_color_t color_primary, lv_color_t color_seconda
     theme.font_subtitle   = font_subtitle;
     theme.font_title      = font_title;
     theme.flags           = flags;
-
-    styles = &styles_actual;
 
     basic_init();
     cont_init();

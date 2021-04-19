@@ -441,14 +441,12 @@ static void displayTask(void *ignore) {
 static void lvAppCreate(void) {
     ESP_LOGI(DISP_TASK_TAG, "setting up initial display state");
 
-/*
-    lv_theme_t *base_theme = lv_theme_get_act();
-    fp2_theme = lv_theme_fp2_init(LV_THEME_DEFAULT_COLOR_PRIMARY, LV_THEME_DEFAULT_COLOR_SECONDARY,
-                                  LV_THEME_DEFAULT_FLAG, LV_THEME_DEFAULT_FONT_SMALL, LV_THEME_DEFAULT_FONT_NORMAL,
-                                  LV_THEME_DEFAULT_FONT_SUBTITLE, LV_THEME_DEFAULT_FONT_TITLE);
+/*     lv_theme_t *base_theme = lv_theme_get_act();
+    fp2_theme = lv_theme_fp2_init(CONFIG_LV_THEME_DEFAULT_COLOR_PRIMARY, CONFIG_LV_THEME_DEFAULT_COLOR_SECONDARY,
+                                  CONFIG_LV_THEME_DEFAULT_FLAG, CONFIG_LV_THEME_DEFAULT_FONT_SMALL, CONFIG_LV_THEME_DEFAULT_FONT_NORMAL,
+                                  CONFIG_LV_THEME_DEFAULT_FONT_SUBTITLE, CONFIG_LV_THEME_DEFAULT_FONT_TITLE);
     lv_theme_set_base(fp2_theme, base_theme);
-    lv_theme_set_act(fp2_theme);
-*/
+    lv_theme_set_act(fp2_theme); */
 
     // get app data
     const esp_app_desc_t *app_info = esp_ota_get_app_description();
@@ -459,12 +457,12 @@ static void lvAppCreate(void) {
     // Create project name label
     app_name = lv_label_create(scr_def, NULL);
     lv_label_set_text(app_name, app_info->project_name);
-    lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
+    lv_obj_align(app_name, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -2);
 
     // create spinny loading icon
     load_spinner = lv_spinner_create(scr_def, NULL);
     lv_obj_set_size(load_spinner, 90, 90);
-    lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -5);
+    lv_obj_align(load_spinner, NULL, LV_ALIGN_CENTER, 0, -8);
     lv_spinner_set_type(load_spinner, LV_SPINNER_TYPE_CONSTANT_ARC);
 
     // Get rid of annoying border around spinny loading icon
@@ -598,7 +596,7 @@ static void lv_val_update(lv_task_t *task) {
 static void lv_group_focus_cb(lv_group_t *group) {
     static const char *LOCAL_TAG = "lv_group_focus";
     lv_obj_t *obj                = lv_group_get_focused(group);
-    lv_coord_t tile_x;
+    lv_coord_t tile_x = 0;
     lv_coord_t tile_y = 0;
     if (obj == lv_tile_output) {
         tile_x = 0;
@@ -610,7 +608,7 @@ static void lv_group_focus_cb(lv_group_t *group) {
         tile_x = 2;
         lv_tileview_set_tile_act(lv_tileview, tile_x, tile_y, LV_ANIM_ON);
     } else {
-        ESP_LOGI(LOCAL_TAG, "no tile found to focus");
+        ESP_LOGD(LOCAL_TAG, "no tile found to focus");
     }
 }
 
