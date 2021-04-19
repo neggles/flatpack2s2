@@ -13,6 +13,8 @@
 /*********************
  *      DEFINES
  *********************/
+#define LV_FP2_BG_PAD  4
+#define LV_FP2_BTN_PAD 2
 
 /**********************
  *      TYPEDEFS
@@ -30,9 +32,9 @@ static lv_theme_t theme;
 static struct {
     lv_style_t bg;
     lv_style_t btn;
+    lv_style_t page;
     lv_style_t round;
     lv_style_t color;
-    lv_style_t gray;
     lv_style_t tick_line;
     lv_style_t tight;
     lv_style_t spin_bg;
@@ -50,43 +52,33 @@ static struct {
 static void basic_init(void) {
     lv_style_reset(&styles.bg);
     lv_style_set_bg_opa(&styles.bg, LV_STATE_DEFAULT, LV_OPA_COVER);
-    lv_style_set_border_width(&styles.bg, LV_STATE_DEFAULT, 0);
-    lv_style_set_border_width(&styles.bg, LV_STATE_FOCUSED, 1);
+    lv_style_set_border_width(&styles.bg, LV_STATE_DEFAULT, 1);
+    lv_style_set_border_width(&styles.bg, LV_STATE_FOCUSED, 2);
     lv_style_set_border_color(&styles.bg, LV_STATE_FOCUSED, theme.color_secondary);
     lv_style_set_line_width(&styles.bg, LV_STATE_DEFAULT, 1);
     lv_style_set_scale_end_line_width(&styles.bg, LV_STATE_DEFAULT, 1);
     lv_style_set_scale_end_color(&styles.bg, LV_STATE_DEFAULT, theme.color_primary);
     lv_style_set_text_color(&styles.bg, LV_STATE_DEFAULT, LV_COLOR_BLACK);
-    lv_style_set_pad_left(&styles.bg, LV_STATE_DEFAULT, LV_DPI / 10);
-    lv_style_set_pad_right(&styles.bg, LV_STATE_DEFAULT, LV_DPI / 10);
-    lv_style_set_pad_top(&styles.bg, LV_STATE_DEFAULT, LV_DPI / 10);
-    lv_style_set_pad_bottom(&styles.bg, LV_STATE_DEFAULT, LV_DPI / 10);
-    lv_style_set_pad_inner(&styles.bg, LV_STATE_DEFAULT, LV_DPI / 10);
+    lv_style_set_pad_left(&styles.bg, LV_STATE_DEFAULT, LV_FP2_BG_PAD);
+    lv_style_set_pad_right(&styles.bg, LV_STATE_DEFAULT, LV_FP2_BG_PAD);
+    lv_style_set_pad_top(&styles.bg, LV_STATE_DEFAULT, LV_FP2_BG_PAD);
+    lv_style_set_pad_bottom(&styles.bg, LV_STATE_DEFAULT, LV_FP2_BG_PAD);
+    lv_style_set_pad_inner(&styles.bg, LV_STATE_DEFAULT, LV_FP2_BG_PAD);
 
     lv_style_reset(&styles.btn);
-    lv_style_set_bg_color(&styles.btn, LV_STATE_PRESSED, lv_color_hex3(0xccc));
-    lv_style_set_bg_color(&styles.btn, LV_STATE_CHECKED, theme.color_primary);
-    lv_style_set_bg_color(&styles.btn, LV_STATE_CHECKED | LV_STATE_PRESSED,
-                          lv_color_darken(theme.color_primary, LV_OPA_30));
-    lv_style_set_bg_color(&styles.btn, LV_STATE_DISABLED, LV_COLOR_SILVER);
-    lv_style_set_text_color(&styles.btn, LV_STATE_DISABLED, LV_COLOR_GRAY);
-    lv_style_set_image_recolor(&styles.btn, LV_STATE_DISABLED, LV_COLOR_GRAY);
+    lv_style_set_pad_all(&styles.btn, LV_STATE_DEFAULT, LV_FP2_BTN_PAD);
+    lv_style_set_pad_inner(&styles.btn, LV_STATE_DEFAULT, LV_FP2_BTN_PAD);
 
     lv_style_reset(&styles.round);
-    lv_style_set_radius(&styles.round, LV_STATE_DEFAULT, LV_RADIUS_CIRCLE);
+    lv_style_set_radius(&styles.round, LV_STATE_DEFAULT, 0x7FFF);
 
     lv_style_reset(&styles.color);
     lv_style_set_bg_color(&styles.color, LV_STATE_DEFAULT, theme.color_primary);
     lv_style_set_line_color(&styles.color, LV_STATE_DEFAULT, theme.color_primary);
 
-    lv_style_reset(&styles.gray);
-    lv_style_set_bg_color(&styles.gray, LV_STATE_DEFAULT, LV_COLOR_SILVER);
-    lv_style_set_line_color(&styles.gray, LV_STATE_DEFAULT, LV_COLOR_SILVER);
-    lv_style_set_text_color(&styles.gray, LV_STATE_DEFAULT, LV_COLOR_GRAY);
-
     lv_style_reset(&styles.tick_line);
-    lv_style_set_line_width(&styles.tick_line, LV_STATE_DEFAULT, 5);
-    lv_style_set_scale_end_line_width(&styles.tick_line, LV_STATE_DEFAULT, 5);
+    lv_style_set_line_width(&styles.tick_line, LV_STATE_DEFAULT, 2);
+    lv_style_set_scale_end_line_width(&styles.tick_line, LV_STATE_DEFAULT, 3);
     lv_style_set_scale_end_color(&styles.tick_line, LV_STATE_DEFAULT, theme.color_primary);
 
     lv_style_reset(&styles.tight);
@@ -189,7 +181,9 @@ static void led_init(void) {
 
 static void page_init(void) {
 #if LV_USE_PAGE
-
+    lv_style_reset(&styles.page);
+    lv_style_set_border_width(&styles.page, LV_STATE_DEFAULT, 1);
+    lv_style_set_border_width(&styles.page, LV_STATE_FOCUSED, 2);
 #endif
 }
 
@@ -214,9 +208,9 @@ static void spinbox_init(void) {
 static void spinner_init(void) {
 #if LV_USE_SPINNER != 0
     lv_style_reset(&styles.spin_bg);
-    lv_style_set_line_opa(&styles.spin_bg, LV_STATE_DEFAULT, LV_OPA_TRANSP);
-    lv_style_set_bg_opa(&styles.spin_bg, LV_STATE_DEFAULT, LV_OPA_TRANSP);
-    lv_style_set_border_opa(&styles.spin_bg, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+    lv_style_set_line_opa(&styles.spin_bg, LV_STATE_DEFAULT, 0);
+    lv_style_set_bg_opa(&styles.spin_bg, LV_STATE_DEFAULT, 0);
+    lv_style_set_border_opa(&styles.spin_bg, LV_STATE_DEFAULT, 0);
 #endif
 }
 
@@ -296,8 +290,8 @@ static void win_init(void) {
  * @return a pointer to reference this theme later
  */
 lv_theme_t *lv_theme_fp2_init(lv_color_t color_primary, lv_color_t color_secondary, uint32_t flags,
-                                   const lv_font_t *font_small, const lv_font_t *font_normal,
-                                   const lv_font_t *font_subtitle, const lv_font_t *font_title) {
+                              const lv_font_t *font_small, const lv_font_t *font_normal, const lv_font_t *font_subtitle,
+                              const lv_font_t *font_title) {
 
     theme.color_primary   = color_primary;
     theme.color_secondary = color_secondary;
@@ -534,7 +528,6 @@ static void theme_apply(lv_theme_t *th, lv_obj_t *obj, lv_theme_style_t name) {
         case LV_THEME_PAGE:
             list = lv_obj_get_style_list(obj, LV_PAGE_PART_BG);
             _lv_style_list_add_style(list, &styles.bg);
-            _lv_style_list_add_style(list, &styles.gray);
 
             list = lv_obj_get_style_list(obj, LV_PAGE_PART_SCROLLABLE);
             _lv_style_list_add_style(list, &styles.bg);
@@ -567,7 +560,6 @@ static void theme_apply(lv_theme_t *th, lv_obj_t *obj, lv_theme_style_t name) {
         case LV_THEME_TABVIEW_PAGE:
             list = lv_obj_get_style_list(obj, LV_PAGE_PART_BG);
             _lv_style_list_add_style(list, &styles.bg);
-            _lv_style_list_add_style(list, &styles.gray);
 
             list = lv_obj_get_style_list(obj, LV_PAGE_PART_SCROLLABLE);
             _lv_style_list_add_style(list, &styles.bg);
@@ -695,9 +687,6 @@ static void theme_apply(lv_theme_t *th, lv_obj_t *obj, lv_theme_style_t name) {
         case LV_THEME_TEXTAREA:
             list = lv_obj_get_style_list(obj, LV_TEXTAREA_PART_BG);
             _lv_style_list_add_style(list, &styles.bg);
-
-            list = lv_obj_get_style_list(obj, LV_TEXTAREA_PART_PLACEHOLDER);
-            _lv_style_list_add_style(list, &styles.gray);
 
             list = lv_obj_get_style_list(obj, LV_TEXTAREA_PART_CURSOR);
             _lv_style_list_add_style(list, &styles.bg);

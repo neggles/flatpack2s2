@@ -1,8 +1,8 @@
 set(project_srcs "src/flatpack2.c" "main.c")
 set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function")
 
-# custom theme - no worky....
-#list(APPEND project_srcs "src/lv_theme_fp2.c")
+# custom theme...
+list(APPEND project_srcs "src/lv_theme_fp2.c")
 
 # debug!
 #list(APPEND project_srcs "src/debug.c")
