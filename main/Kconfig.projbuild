@@ -15,6 +15,7 @@ menu "flatpack2s2 Project Configuration"
                 POSIX time zone string for system. I might implement a tz db later idk
 
         config MDNS_HOST_NAME
+            string "mDNS Host Name"
             default "flatpack2s2"
             help
                 Specify the hostname to advertise over mDNS; this affects the expected hostname of the web API.

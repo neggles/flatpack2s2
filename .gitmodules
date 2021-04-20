@@ -7,3 +7,7 @@
 [submodule "components/esp32-wifi-manager"]
 	path = components/esp32-wifi-manager
 	url = https://github.com/tonyp7/esp32-wifi-manager.git
+[submodule "components/brotli"]
+	path = components/brotli
+	url = git@github.com:martinberlin/brotli.git
+	branch = esp-idf
