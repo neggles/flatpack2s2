@@ -45,8 +45,10 @@
 
 // wifi prov mgmt
 #include "esp_netif.h"
-#include "esp_wifi_types.h"
+#include "esp_wifi.h"
+// esp32-wifi-manager
 #include "wifi_manager.h"
+#include "http_app.h"
 
 // * --------------------------- Project components ------------------------- */
 
@@ -285,7 +287,7 @@ void app_main(void) {
     ESP_LOGW(TAG, "flatpack2s2 startup!");
 
     //* logging config
-    // esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("*", ESP_LOG_INFO);
     if (TWAI_MSG_LOG_ALL) esp_log_level_set(TWAI_MSG_LOG_TAG, ESP_LOG_DEBUG);
     // esp_log_level_set("wifi:*", ESP_LOG_INFO);
     // esp_log_level_set("httpd_parse", ESP_LOG_INFO);
@@ -492,11 +494,11 @@ static void lvAppCreate(void) {
     lv_tileview_add_element(lv_tileview, lv_tile_output);
 
     lv_t1_labels.vdc = lv_label_create(lv_tile_output, NULL);
-    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_TOP_LEFT, 3, 3);
     lv_t1_labels.amps = lv_label_create(lv_tile_output, NULL);
-    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_LEFT_MID, 0, 0);
+    lv_obj_align(lv_t1_labels.amps, lv_tile_output, LV_ALIGN_IN_LEFT_MID, 3, 0);
     lv_t1_labels.watts = lv_label_create(lv_tile_output, NULL);
-    lv_obj_align(lv_t1_labels.vdc, lv_tile_output, LV_ALIGN_IN_BOTTOM_LEFT, 0, 0);
+    lv_obj_align(lv_t1_labels.watts, lv_tile_output, LV_ALIGN_IN_BOTTOM_LEFT, 3, -3);
 
 
     // tile_status: input voltage, temps, status code
@@ -506,13 +508,13 @@ static void lvAppCreate(void) {
     lv_tileview_add_element(lv_tileview, lv_tile_status);
 
     lv_t2_labels.vac = lv_label_create(lv_tile_status, NULL);
-    lv_obj_align(lv_t2_labels.vac, lv_tile_status, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+    lv_obj_align(lv_t2_labels.vac, lv_tile_status, LV_ALIGN_IN_TOP_LEFT, 3, 3);
     lv_t2_labels.intake = lv_label_create(lv_tile_status, NULL);
-    lv_obj_align(lv_t2_labels.intake, lv_tile_status, LV_ALIGN_IN_TOP_RIGHT, 0, 0);
+    lv_obj_align(lv_t2_labels.intake, lv_tile_status, LV_ALIGN_IN_TOP_RIGHT, -3, 3);
     lv_t2_labels.exhaust = lv_label_create(lv_tile_status, NULL);
-    lv_obj_align(lv_t2_labels.exhaust, lv_tile_status, LV_ALIGN_IN_RIGHT_MID, 0, 0);
+    lv_obj_align(lv_t2_labels.exhaust, lv_t2_labels.intake, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, -3);
     lv_t2_labels.status = lv_label_create(lv_tile_status, NULL);
-    lv_obj_align(lv_t2_labels.status, lv_tile_status, LV_ALIGN_IN_BOTTOM_LEFT, 0, 0);
+    lv_obj_align(lv_t2_labels.status, lv_tile_status, LV_ALIGN_IN_BOTTOM_LEFT, 3, -3);
 
 
     // tile_vars: all available status values, in a list
@@ -574,12 +576,19 @@ static void lv_val_update(lv_task_t *task) {
             lv_label_set_text_fmt(lv_t1_labels.vdc, "%4.1fVDC", fp2.sensors.vdc);
             lv_label_set_text_fmt(lv_t1_labels.amps, "%4.1fA", fp2.sensors.amps);
             lv_label_set_text_fmt(lv_t1_labels.watts, "%4.1fW", fp2.sensors.watts);
+            lv_obj_realign(lv_t1_labels.vdc);
+            lv_obj_realign(lv_t1_labels.amps);
+            lv_obj_realign(lv_t1_labels.watts);
             break;
         case 1: // lv_tile_status
             lv_label_set_text_fmt(lv_t2_labels.vac, "%4.1fVAC", fp2.sensors.vac);
             lv_label_set_text_fmt(lv_t2_labels.intake, "%2d°C", fp2.sensors.intake);
             lv_label_set_text_fmt(lv_t2_labels.exhaust, "%2d°C", fp2.sensors.exhaust);
             lv_label_set_text_fmt(lv_t2_labels.status, "%s", cur_fp2_status);
+            lv_obj_realign(lv_t2_labels.vac);
+            lv_obj_realign(lv_t2_labels.intake);
+            lv_obj_realign(lv_t2_labels.exhaust);
+            lv_obj_realign(lv_t2_labels.status);
             break;
         case 2: // lv_tile_vars
             lv_label_set_text_fmt(lv_t3_labels.vac, "Vin: %3dV AC", fp2.sensors.vac);
