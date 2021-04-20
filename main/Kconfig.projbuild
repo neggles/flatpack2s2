@@ -14,6 +14,46 @@ menu "flatpack2s2 Project Configuration"
             help
                 POSIX time zone string for system. I might implement a tz db later idk
 
+        config MDNS_HOST_NAME
+            default "flatpack2s2"
+            help
+                Specify the hostname to advertise over mDNS; this affects the expected hostname of the web API.
+                Should be set the same as CONFIG_LWIP_LOCAL_HOSTNAME
+
+        choice WEB_DEPLOY_MODE
+            prompt "Web interface deployment mode"
+            default WEB_DEPLOY_FLASH
+            help
+                Select website deploy mode.
+                You can deploy website to host, and ESP32 will retrieve them in a semihost way (JTAG is needed).
+                You can deploy website to SD card or SPI flash, and ESP32 will retrieve them via SDIO/SPI interface.
+                Detailed operation steps are listed in the example README file.
+            config WEB_DEPLOY_FLASH
+                bool "Flash partition"
+                help
+                    Deploy web frontend files to fatfs partition on SPI flash.
+                    Recommended for production use, limits total web filesize.
+            config WEB_DEPLOY_SEMIHOST
+                bool "Semihosting"
+                help
+                    Deploy using JTAG/GDB filesystem semihosting mode.
+                    Recommended during development, if you have JTAG available - will not work otherwise.
+        endchoice
+
+        if WEB_DEPLOY_SEMIHOST
+        config HOST_PATH_TO_MOUNT
+            string "Host path to mount (e.g. absolute path to web dist directory)"
+            default "PATH-TO-WEB-DIST_DIR"
+            help
+                Absolute path on host to mount in web file semihosting mode.
+        endif
+
+        config WEB_MOUNT_POINT
+            string "Web VFS mount point"
+            default "/www"
+            help
+                Path under which web files will be mounted in ESP VFS.
+                You shouldn't need to change this, really, and if you do it may break things.
     endmenu #System
 
     menu "TWAI"
