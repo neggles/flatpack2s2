@@ -39,24 +39,24 @@
 
 <script>
 export default {
-  data() {
-    return { red: 160, green: 160, blue: 160 };
+  data () {
+    return { red: 160, green: 160, blue: 160 }
   },
   methods: {
-    set_color: function() {
+    set_color: function () {
       this.$ajax
-        .post("/api/v1/light/brightness", {
+        .post('/api/v1/light/brightness', {
           red: this.red,
           green: this.green,
           blue: this.blue
         })
         .then(data => {
-          console.log(data);
+          console.log(data)
         })
         .catch(error => {
-          console.log(error);
-        });
+          console.log(error)
+        })
     }
   }
-};
+}
 </script>
