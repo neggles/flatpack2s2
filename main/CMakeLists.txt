@@ -4,9 +4,6 @@ set(extra_compile_args "-Wno-unused-variable" "-Wno-unused-function")
 # custom theme...
 list(APPEND project_srcs "src/lv_theme_fp2.c")
 
-# debug!
-#list(APPEND project_srcs "src/debug.c")
-
 # gcc8 doesn't know about #pragma region
 list(APPEND extra_compile_args "-Wno-unknown-pragmas")
 
