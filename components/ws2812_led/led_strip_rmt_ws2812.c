@@ -19,7 +19,7 @@
 #include "led_strip.h"
 #include "driver/rmt.h"
 
-static const char *TAG = "ws2812";
+static const char *TAG = "ws2812_led";
 #define STRIP_CHECK(a, str, goto_tag, ret_value, ...)                             \
     do                                                                            \
     {                                                                             \
