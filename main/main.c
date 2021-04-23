@@ -317,12 +317,6 @@ void app_main(void) {
     //* Create RGB LED update task
     xLedQueue = xQueueCreate(3, sizeof(hsv_t));
     assert(xLedQueue != NULL);
-    const hsv_t led_initial = {
-        .hue = 260,
-        .sat = 100,
-        .val = 50,
-    };
-    xQueueSend(xLedQueue, &led_initial, 0);
     xTaskCreate(&ledTask, "ledTask", 1024 * 2, NULL, 3, NULL);
     xEventGroupWaitBits(appEventGroup, LED_RUN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
@@ -357,6 +351,14 @@ void app_main(void) {
 
     //* Create SNTP management task
     xTaskCreate(&timeSyncTask, "timeSync", 1024 * 2, NULL, 2, NULL);
+
+    //* set the LED to a nice purple-y color
+    const hsv_t led_initial = {
+        .hue = 260,
+        .sat = 100,
+        .val = 50,
+    };
+    xQueueSend(xLedQueue, &led_initial, 0);
 
     //* kill the startup watchdog
     rtc_wdt_disable();
@@ -624,32 +626,6 @@ static void lv_group_focus_cb(lv_group_t *group) {
         ESP_LOGD(LOCAL_TAG, "no tile found to focus");
     }
 }
-
-/* static void lv_tv_event_cb(lv_obj_t *tv, lv_event_t e) {
-    if (e == LV_EVENT_VALUE_CHANGED || e == LV_EVENT_REFRESH) {
-        lv_group_remove_all_objs(lv_group);
-
-        uint16_t tab    = lv_tabview_get_tab_act(tv);
-        size_t size     = 0;
-        lv_obj_t **objs = NULL;
-        if (tab == 0) {
-            size = sizeof(selector_objs);
-            objs = (lv_obj_t **)&selector_objs;
-        } else if (tab == 1) {
-            size = sizeof(textinput_objs);
-            objs = (lv_obj_t **)&textinput_objs;
-        }
-
-        lv_group_add_obj(lv_group, tv);
-
-        uint32_t i;
-        for (i = 0; i < size / sizeof(lv_obj_t *); i++) {
-            if (objs[i] == NULL) continue;
-            lv_group_add_obj(lv_group, objs[i]);
-        }
-    }
-}
- */
 
 // lvgl log callback
 static void lv_log_cb(lv_log_level_t level, const char *file, uint32_t line, const char *fn_name, const char *dsc) {
