@@ -1,12 +1,15 @@
 [submodule "components/lvgl"]
 	path = components/lvgl
 	url = https://github.com/lvgl/lvgl.git
+	branch = releases/v7
 [submodule "components/lvgl_esp32_drivers"]
 	path = components/lvgl_esp32_drivers
-	url = https://github.com/lvgl/lvgl_esp32_drivers.git
+	url = https://github.com/neg2led/lvgl_esp32_drivers.git
+	branch = ssd1306-tweaks
 [submodule "components/esp32-wifi-manager"]
 	path = components/esp32-wifi-manager
 	url = https://github.com/tonyp7/esp32-wifi-manager.git
+	branch = master
 [submodule "components/brotli"]
 	path = components/brotli
 	url = git@github.com:martinberlin/brotli.git
